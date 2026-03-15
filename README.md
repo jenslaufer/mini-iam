@@ -1,16 +1,14 @@
-# mini-iam
+# LaunchKit
 
-Minimal Identity and Access Management service. OAuth2 + OpenID Connect in a single Go binary with Vue 3 admin UI.
+Auth and email marketing for startups. One Go binary, one Vue admin UI.
 
-## Features
+## What it does
 
-- OAuth2 authorization code flow with PKCE
-- OpenID Connect discovery, JWKS, userinfo
-- RS256 JWT tokens (RSA key auto-generated, stored in SQLite)
-- Refresh token rotation and revocation
-- Admin UI for user and client management
-- Role-based access control (user/admin)
-- SQLite database (pure Go, no CGo)
+**Identity & Access Management** — OAuth2 + OpenID Connect with PKCE, JWT tokens, user registration, role-based access control.
+
+**Email Marketing** — Contacts, segments, campaigns with async sending, open tracking, unsubscribe handling, GDPR consent tracking.
+
+**Landing Page Flow** — Collect emails (contacts without passwords), send invite campaigns, users activate accounts when your app launches.
 
 ## Quick Start
 
@@ -18,23 +16,7 @@ Minimal Identity and Access Management service. OAuth2 + OpenID Connect in a sin
 docker compose up
 ```
 
-Open http://localhost:3000 and log in with the admin credentials.
-
-### Development
-
-Backend:
-```bash
-cd backend
-go build -o mini-iam .
-ADMIN_EMAIL=admin@mini-iam.local ADMIN_PASSWORD=changeme ./mini-iam
-```
-
-Frontend:
-```bash
-cd frontend
-npm install
-npm run dev
-```
+Open http://localhost:3000. Login: `admin@mini-iam.local` / `changeme`.
 
 ## Configuration
 
@@ -45,52 +27,131 @@ npm run dev
 | `CORS_ORIGINS` | `*` | Allowed CORS origins |
 | `ADMIN_EMAIL` | — | Seed admin account email |
 | `ADMIN_PASSWORD` | — | Seed admin account password |
+| `SMTP_HOST` | — | SMTP server (empty = log-only mode) |
+| `SMTP_PORT` | `587` | SMTP port |
+| `SMTP_USER` | — | SMTP username |
+| `SMTP_PASSWORD` | — | SMTP password |
+| `SMTP_FROM` | — | Default sender email |
+| `SMTP_FROM_NAME` | `LaunchKit` | Default sender name |
+| `SMTP_RATE_MS` | `100` | Delay between emails (ms) |
 
 ## Endpoints
+
+### Auth (IAM)
 
 | Method | Path | Description |
 |---|---|---|
 | POST | `/register` | User registration |
-| POST | `/login` | Direct login (returns tokens) |
-| GET | `/authorize` | OAuth2 authorization (login form) |
-| POST | `/authorize` | Process authorization |
+| POST | `/login` | Login (returns JWT tokens) |
+| GET | `/authorize` | OAuth2 authorization |
 | POST | `/token` | OAuth2 token exchange |
 | GET | `/userinfo` | OIDC userinfo |
 | GET | `/.well-known/openid-configuration` | OIDC discovery |
 | GET | `/jwks` | JSON Web Key Set |
 | POST | `/revoke` | Token revocation |
 | POST | `/clients` | Register OAuth2 client |
+| GET | `/activate/{token}` | Account activation page |
 | GET | `/health` | Health check |
-| GET | `/admin/users` | List all users (admin) |
-| GET | `/admin/users/{id}` | Get user by ID (admin) |
-| PUT | `/admin/users/{id}` | Update user (admin) |
-| DELETE | `/admin/users/{id}` | Delete user (admin) |
-| GET | `/admin/clients` | List all clients (admin) |
-| DELETE | `/admin/clients/{id}` | Delete client (admin) |
+
+### Admin — Users & Clients
+
+| Method | Path | Description |
+|---|---|---|
+| GET | `/admin/users` | List users |
+| GET/PUT/DELETE | `/admin/users/{id}` | Manage user |
+| GET | `/admin/clients` | List OAuth2 clients |
+| DELETE | `/admin/clients/{id}` | Delete client |
+
+### Admin — Marketing
+
+| Method | Path | Description |
+|---|---|---|
+| GET/POST | `/admin/contacts` | List / create contacts |
+| POST | `/admin/contacts/import` | Bulk import contacts |
+| GET/DELETE | `/admin/contacts/{id}` | Manage contact |
+| GET/POST | `/admin/segments` | List / create segments |
+| GET/PUT/DELETE | `/admin/segments/{id}` | Manage segment |
+| POST/DELETE | `/admin/segments/{id}/contacts` | Assign contacts |
+| GET/POST | `/admin/campaigns` | List / create campaigns |
+| GET/PUT/DELETE | `/admin/campaigns/{id}` | Manage campaign |
+| POST | `/admin/campaigns/{id}/send` | Send campaign |
+| GET | `/admin/campaigns/{id}/stats` | Campaign statistics |
+
+### Public
+
+| Method | Path | Description |
+|---|---|---|
+| GET | `/track/{id}` | Open tracking pixel |
+| GET/POST | `/unsubscribe/{token}` | Unsubscribe |
 
 ## Project Structure
 
 ```
 backend/
-  main.go           - Server startup, routing
-  store.go          - SQLite operations
-  models.go         - Data models
-  token.go          - JWT creation/validation, JWKS
-  handlers.go       - HTTP handlers
-  middleware.go     - CORS middleware
-  main_test.go      - 102 integration tests
+  main.go              - Entry point, routing
+  middleware.go         - CORS
+  iam/
+    store.go            - Users, clients, auth codes, tokens
+    handlers.go         - OAuth2/OIDC + admin endpoints
+    token.go            - JWT creation/validation, JWKS
+    models.go           - IAM data models
+  marketing/
+    store.go            - Contacts, segments, campaigns
+    handlers.go         - Marketing admin + public endpoints
+    sender.go           - Mailer interface, background worker
+    models.go           - Marketing data models
+  main_test.go          - 172 integration tests
 frontend/
   src/
-    views/          - Login, Dashboard, Users, Clients
-    components/     - Reusable UI components
-    api/            - Backend API client
-    stores/         - Pinia stores (auth, toast)
-  nginx.conf        - Reverse proxy config
+    views/              - Login, Dashboard, Users, Clients,
+                          Contacts, Segments, Campaigns
+    components/         - Reusable UI components
+    api/                - Backend API client
+    stores/             - Pinia stores (auth, toast)
+  nginx.conf            - Reverse proxy (/auth → backend)
 docker-compose.yml
+```
+
+## Development
+
+Backend:
+```bash
+cd backend
+go build -o launchkit .
+ADMIN_EMAIL=admin@local ADMIN_PASSWORD=changeme ./launchkit
+```
+
+Frontend:
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+Tests:
+```bash
+# Backend (172 tests)
+cd backend && go test ./...
+
+# Frontend (97 component tests)
+cd frontend && npm run test
+
+# E2E (requires docker compose up)
+cd frontend && npm run test:e2e
 ```
 
 ## Client Libraries
 
-Compatible with:
+Compatible with standard OAuth2/OIDC libraries:
 - **Python**: Authlib
 - **Vue/JS**: oidc-client-ts
+
+## Email Template Variables
+
+| Variable | Description |
+|---|---|
+| `{{.Name}}` | Contact name |
+| `{{.Email}}` | Contact email |
+| `{{.UnsubscribeURL}}` | Unsubscribe link |
+| `{{.TrackingPixelURL}}` | Open tracking pixel |
+| `{{.InviteURL}}` | Account activation link |

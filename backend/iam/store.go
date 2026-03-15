@@ -1,4 +1,4 @@
-package main
+package iam
 
 import (
 	"crypto/rand"
@@ -19,144 +19,16 @@ type Store struct {
 	db *sql.DB
 }
 
-func NewStore(dbPath string) (*Store, error) {
-	db, err := sql.Open("sqlite", dbPath)
-	if err != nil {
-		return nil, fmt.Errorf("open db: %w", err)
-	}
-
-	// Enable WAL mode and foreign keys
-	for _, pragma := range []string{
-		"PRAGMA journal_mode=WAL",
-		"PRAGMA foreign_keys=ON",
-	} {
-		if _, err := db.Exec(pragma); err != nil {
-			return nil, fmt.Errorf("pragma %s: %w", pragma, err)
-		}
-	}
-
-	s := &Store{db: db}
-	if err := s.migrate(); err != nil {
-		return nil, fmt.Errorf("migrate: %w", err)
-	}
-	return s, nil
+func NewStore(db *sql.DB) *Store {
+	return &Store{db: db}
 }
 
-func (s *Store) migrate() error {
-	schema := `
-	CREATE TABLE IF NOT EXISTS users (
-		id TEXT PRIMARY KEY,
-		email TEXT UNIQUE NOT NULL,
-		password_hash TEXT NOT NULL,
-		name TEXT NOT NULL,
-		role TEXT NOT NULL DEFAULT 'user',
-		created_at DATETIME NOT NULL
-	);
-
-	CREATE TABLE IF NOT EXISTS clients (
-		id TEXT PRIMARY KEY,
-		secret_hash TEXT NOT NULL,
-		name TEXT NOT NULL,
-		redirect_uris TEXT NOT NULL,
-		created_at DATETIME NOT NULL
-	);
-
-	CREATE TABLE IF NOT EXISTS auth_codes (
-		code TEXT PRIMARY KEY,
-		client_id TEXT NOT NULL,
-		user_id TEXT NOT NULL,
-		redirect_uri TEXT NOT NULL,
-		scope TEXT NOT NULL DEFAULT '',
-		nonce TEXT NOT NULL DEFAULT '',
-		code_challenge TEXT NOT NULL DEFAULT '',
-		code_challenge_method TEXT NOT NULL DEFAULT '',
-		expires_at DATETIME NOT NULL,
-		used INTEGER NOT NULL DEFAULT 0
-	);
-
-	CREATE TABLE IF NOT EXISTS refresh_tokens (
-		token TEXT PRIMARY KEY,
-		client_id TEXT NOT NULL,
-		user_id TEXT NOT NULL,
-		scope TEXT NOT NULL DEFAULT '',
-		expires_at DATETIME NOT NULL,
-		revoked INTEGER NOT NULL DEFAULT 0
-	);
-
-	CREATE TABLE IF NOT EXISTS keys (
-		id TEXT PRIMARY KEY,
-		private_key_pem TEXT NOT NULL,
-		created_at DATETIME NOT NULL
-	);
-
-	CREATE TABLE IF NOT EXISTS contacts (
-		id TEXT PRIMARY KEY,
-		email TEXT UNIQUE NOT NULL,
-		name TEXT NOT NULL DEFAULT '',
-		user_id TEXT REFERENCES users(id),
-		unsubscribed INTEGER NOT NULL DEFAULT 0,
-		unsubscribe_token TEXT UNIQUE NOT NULL,
-		invite_token TEXT UNIQUE,
-		consent_source TEXT NOT NULL,
-		consent_at DATETIME NOT NULL,
-		created_at DATETIME NOT NULL
-	);
-
-	CREATE TABLE IF NOT EXISTS segments (
-		id TEXT PRIMARY KEY,
-		name TEXT UNIQUE NOT NULL,
-		description TEXT NOT NULL DEFAULT '',
-		created_at DATETIME NOT NULL
-	);
-
-	CREATE TABLE IF NOT EXISTS contact_segments (
-		contact_id TEXT NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
-		segment_id TEXT NOT NULL REFERENCES segments(id) ON DELETE CASCADE,
-		PRIMARY KEY (contact_id, segment_id)
-	);
-
-	CREATE TABLE IF NOT EXISTS campaigns (
-		id TEXT PRIMARY KEY,
-		subject TEXT NOT NULL,
-		html_body TEXT NOT NULL,
-		from_name TEXT NOT NULL DEFAULT '',
-		from_email TEXT NOT NULL DEFAULT '',
-		status TEXT NOT NULL DEFAULT 'draft',
-		sent_at DATETIME,
-		created_at DATETIME NOT NULL
-	);
-
-	CREATE TABLE IF NOT EXISTS campaign_segments (
-		campaign_id TEXT NOT NULL REFERENCES campaigns(id) ON DELETE CASCADE,
-		segment_id TEXT NOT NULL REFERENCES segments(id) ON DELETE CASCADE,
-		PRIMARY KEY (campaign_id, segment_id)
-	);
-
-	CREATE TABLE IF NOT EXISTS campaign_recipients (
-		id TEXT PRIMARY KEY,
-		campaign_id TEXT NOT NULL REFERENCES campaigns(id) ON DELETE CASCADE,
-		contact_id TEXT NOT NULL REFERENCES contacts(id),
-		status TEXT NOT NULL DEFAULT 'queued',
-		error_message TEXT NOT NULL DEFAULT '',
-		sent_at DATETIME,
-		opened_at DATETIME,
-		UNIQUE(campaign_id, contact_id)
-	);
-	`
-	_, err := s.db.Exec(schema)
-	if err != nil {
-		return err
-	}
-
-	// Add role column if missing (existing databases)
-	s.db.Exec("ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'user'")
-
-	// Add invite_token column if missing (existing databases)
-	s.db.Exec("ALTER TABLE contacts ADD COLUMN invite_token TEXT UNIQUE")
-
-	return nil
+// DB returns the underlying *sql.DB so the marketing package can share it.
+func (s *Store) DB() *sql.DB {
+	return s.db
 }
 
+// Close closes the underlying database connection.
 func (s *Store) Close() error {
 	return s.db.Close()
 }
@@ -486,4 +358,92 @@ func (s *Store) RevokeRefreshToken(token string) error {
 		return fmt.Errorf("token not found")
 	}
 	return nil
+}
+
+// --- Activate (cross-domain: reads contacts table, writes users table) ---
+
+// ActivateContact looks up a contact by invite token, creates a User account,
+// and links the contact to the new user in a single transaction.
+func (s *Store) ActivateContact(inviteToken, password string) (*User, error) {
+	contact, err := s.getContactByInviteToken(inviteToken)
+	if err != nil {
+		return nil, fmt.Errorf("invalid invite token")
+	}
+	if contact.userID != nil {
+		return nil, fmt.Errorf("contact already activated")
+	}
+
+	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	if err != nil {
+		return nil, err
+	}
+
+	user := &User{
+		ID:           uuid.NewString(),
+		Email:        contact.email,
+		PasswordHash: string(hash),
+		Name:         contact.name,
+		Role:         "user",
+		CreatedAt:    time.Now().UTC(),
+	}
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+
+	_, err = tx.Exec(
+		"INSERT INTO users (id, email, password_hash, name, role, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+		user.ID, user.Email, user.PasswordHash, user.Name, user.Role, user.CreatedAt,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	_, err = tx.Exec(
+		"UPDATE contacts SET user_id = ?, invite_token = NULL WHERE id = ?",
+		user.ID, contact.id,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return user, nil
+}
+
+// contactRow is a minimal struct for reading contacts within the iam package.
+type contactRow struct {
+	id     string
+	email  string
+	name   string
+	userID *string
+}
+
+func (s *Store) getContactByInviteToken(token string) (*contactRow, error) {
+	c := &contactRow{}
+	var userID sql.NullString
+	err := s.db.QueryRow(
+		`SELECT id, email, name, user_id FROM contacts WHERE invite_token = ?`, token,
+	).Scan(&c.id, &c.email, &c.name, &userID)
+	if err != nil {
+		return nil, err
+	}
+	if userID.Valid {
+		c.userID = &userID.String
+	}
+	return c, nil
+}
+
+// GetContactByInviteToken returns contact email and whether it has a user_id,
+// used by the Activate handler to render the activation form.
+func (s *Store) GetContactByInviteToken(token string) (email string, activated bool, err error) {
+	c, e := s.getContactByInviteToken(token)
+	if e != nil {
+		return "", false, e
+	}
+	return c.email, c.userID != nil, nil
 }
