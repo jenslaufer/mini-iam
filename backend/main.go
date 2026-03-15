@@ -20,7 +20,7 @@ func main() {
 	adminEmail := os.Getenv("ADMIN_EMAIL")
 	adminPassword := os.Getenv("ADMIN_PASSWORD")
 
-	db, err := openDB("mini-iam.db")
+	db, err := openDB(envOr("DATABASE_PATH", "mini-iam.db"))
 	if err != nil {
 		log.Fatalf("Failed to initialize database: %v", err)
 	}

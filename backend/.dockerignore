@@ -10,7 +10,6 @@ docker-compose.yml
 # Documentation
 README.md
 *.md
-marketing/
 
 # Development and test artifacts
 *_test.go
