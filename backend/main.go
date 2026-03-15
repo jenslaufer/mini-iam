@@ -4,6 +4,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strconv"
 )
 
 func main() {
@@ -26,13 +27,45 @@ func main() {
 		log.Printf("Admin account seeded: %s", adminEmail)
 	}
 
+	// SMTP configuration
+	smtpHost := os.Getenv("SMTP_HOST")
+	smtpPort := envOr("SMTP_PORT", "587")
+	smtpUser := os.Getenv("SMTP_USER")
+	smtpPassword := os.Getenv("SMTP_PASSWORD")
+	smtpFrom := os.Getenv("SMTP_FROM")
+	smtpFromName := envOr("SMTP_FROM_NAME", "mini-iam")
+	smtpRateMS, _ := strconv.Atoi(envOr("SMTP_RATE_MS", "100"))
+
 	rsaKey, err := store.LoadOrCreateRSAKey()
 	if err != nil {
 		log.Fatalf("Failed to load/create RSA key: %v", err)
 	}
 
 	tokenService := NewTokenService(rsaKey, issuer)
+
+	// Initialize mailer
+	var mailer Mailer
+	if smtpHost != "" {
+		mailer = &SMTPMailer{
+			Host:     smtpHost,
+			Port:     smtpPort,
+			User:     smtpUser,
+			Password: smtpPassword,
+			From:     smtpFrom,
+			FromName: smtpFromName,
+		}
+		log.Printf("SMTP mailer configured: %s:%s", smtpHost, smtpPort)
+	} else {
+		mailer = &LogMailer{}
+		log.Println("No SMTP_HOST configured, using log-only mailer")
+	}
+
+	// Start campaign sender worker
+	sender := NewCampaignSender(store, mailer, issuer, smtpRateMS)
+	sender.Start()
+
 	h := NewHandler(store, tokenService, issuer)
+	h.sender = sender
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", h.Health)
@@ -49,6 +82,20 @@ func main() {
 	mux.HandleFunc("/admin/users/", h.AdminUserByID)
 	mux.HandleFunc("/admin/clients", h.AdminListClients)
 	mux.HandleFunc("/admin/clients/", h.AdminDeleteClient)
+
+	// Marketing routes (admin-protected)
+	mux.HandleFunc("/admin/contacts/import", h.AdminImportContacts)
+	mux.HandleFunc("/admin/contacts", h.AdminContacts)
+	mux.HandleFunc("/admin/contacts/", h.AdminContactByID)
+	mux.HandleFunc("/admin/segments", h.AdminSegments)
+	mux.HandleFunc("/admin/segments/", h.AdminSegmentByID)
+	mux.HandleFunc("/admin/campaigns", h.AdminCampaigns)
+	mux.HandleFunc("/admin/campaigns/", h.AdminCampaignByID)
+
+	// Public endpoints (no auth)
+	mux.HandleFunc("/activate/", h.Activate)
+	mux.HandleFunc("/track/", h.TrackOpen)
+	mux.HandleFunc("/unsubscribe/", h.Unsubscribe)
 
 	handler := CORSMiddleware(corsOrigins)(mux)
 

@@ -11,14 +11,31 @@ vi.mock('../../api/clients.js', () => ({
   getClients: vi.fn(),
 }))
 
+vi.mock('../../api/contacts.js', () => ({
+  listContacts: vi.fn(),
+}))
+
+vi.mock('../../api/segments.js', () => ({
+  listSegments: vi.fn(),
+}))
+
+vi.mock('../../api/campaigns.js', () => ({
+  listCampaigns: vi.fn(),
+}))
+
 vi.mock('vue-router', () => ({
   useRouter: () => ({ push: vi.fn() }),
   useRoute: () => ({}),
   RouterLink: { template: '<a><slot /></a>' },
+  createRouter: vi.fn(),
+  createWebHistory: vi.fn(),
 }))
 
 import { getUsers } from '../../api/users.js'
 import { getClients } from '../../api/clients.js'
+import { listContacts } from '../../api/contacts.js'
+import { listSegments } from '../../api/segments.js'
+import { listCampaigns } from '../../api/campaigns.js'
 
 const USERS = [
   { id: '1', email: 'admin@example.com', role: 'admin', created_at: '2024-01-01' },
@@ -43,6 +60,9 @@ describe('DashboardView', () => {
   beforeEach(() => {
     getUsers.mockResolvedValue(USERS)
     getClients.mockResolvedValue(CLIENTS)
+    listContacts.mockResolvedValue([])
+    listSegments.mockResolvedValue([])
+    listCampaigns.mockResolvedValue([])
   })
 
   it('shows correct total user count', async () => {

@@ -88,6 +88,60 @@ func (s *Store) migrate() error {
 		private_key_pem TEXT NOT NULL,
 		created_at DATETIME NOT NULL
 	);
+
+	CREATE TABLE IF NOT EXISTS contacts (
+		id TEXT PRIMARY KEY,
+		email TEXT UNIQUE NOT NULL,
+		name TEXT NOT NULL DEFAULT '',
+		user_id TEXT REFERENCES users(id),
+		unsubscribed INTEGER NOT NULL DEFAULT 0,
+		unsubscribe_token TEXT UNIQUE NOT NULL,
+		invite_token TEXT UNIQUE,
+		consent_source TEXT NOT NULL,
+		consent_at DATETIME NOT NULL,
+		created_at DATETIME NOT NULL
+	);
+
+	CREATE TABLE IF NOT EXISTS segments (
+		id TEXT PRIMARY KEY,
+		name TEXT UNIQUE NOT NULL,
+		description TEXT NOT NULL DEFAULT '',
+		created_at DATETIME NOT NULL
+	);
+
+	CREATE TABLE IF NOT EXISTS contact_segments (
+		contact_id TEXT NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
+		segment_id TEXT NOT NULL REFERENCES segments(id) ON DELETE CASCADE,
+		PRIMARY KEY (contact_id, segment_id)
+	);
+
+	CREATE TABLE IF NOT EXISTS campaigns (
+		id TEXT PRIMARY KEY,
+		subject TEXT NOT NULL,
+		html_body TEXT NOT NULL,
+		from_name TEXT NOT NULL DEFAULT '',
+		from_email TEXT NOT NULL DEFAULT '',
+		status TEXT NOT NULL DEFAULT 'draft',
+		sent_at DATETIME,
+		created_at DATETIME NOT NULL
+	);
+
+	CREATE TABLE IF NOT EXISTS campaign_segments (
+		campaign_id TEXT NOT NULL REFERENCES campaigns(id) ON DELETE CASCADE,
+		segment_id TEXT NOT NULL REFERENCES segments(id) ON DELETE CASCADE,
+		PRIMARY KEY (campaign_id, segment_id)
+	);
+
+	CREATE TABLE IF NOT EXISTS campaign_recipients (
+		id TEXT PRIMARY KEY,
+		campaign_id TEXT NOT NULL REFERENCES campaigns(id) ON DELETE CASCADE,
+		contact_id TEXT NOT NULL REFERENCES contacts(id),
+		status TEXT NOT NULL DEFAULT 'queued',
+		error_message TEXT NOT NULL DEFAULT '',
+		sent_at DATETIME,
+		opened_at DATETIME,
+		UNIQUE(campaign_id, contact_id)
+	);
 	`
 	_, err := s.db.Exec(schema)
 	if err != nil {
@@ -96,6 +150,9 @@ func (s *Store) migrate() error {
 
 	// Add role column if missing (existing databases)
 	s.db.Exec("ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'user'")
+
+	// Add invite_token column if missing (existing databases)
+	s.db.Exec("ALTER TABLE contacts ADD COLUMN invite_token TEXT UNIQUE")
 
 	return nil
 }

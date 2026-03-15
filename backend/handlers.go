@@ -10,9 +10,10 @@ import (
 )
 
 type Handler struct {
-	store    *Store
-	tokens   *TokenService
-	issuer   string
+	store  *Store
+	tokens *TokenService
+	issuer string
+	sender *CampaignSender
 }
 
 func NewHandler(store *Store, tokens *TokenService, issuer string) *Handler {
@@ -677,5 +678,121 @@ func isValidRedirectURI(client *Client, uri string) bool {
 		}
 	}
 	return false
+}
+
+// Activate handles the invite activation flow (public, no auth).
+// GET  /activate/{token} — renders an HTML password form.
+// POST /activate/{token} — sets the password and creates the User account.
+func (h *Handler) Activate(w http.ResponseWriter, r *http.Request) {
+	token := strings.TrimPrefix(r.URL.Path, "/activate/")
+	if token == "" {
+		writeError(w, http.StatusBadRequest, "invalid_request", "token required")
+		return
+	}
+
+	switch r.Method {
+	case http.MethodGet:
+		contact, err := h.store.GetContactByInviteToken(token)
+		if err != nil || contact.UserID != nil {
+			w.Header().Set("Content-Type", "text/html")
+			w.WriteHeader(http.StatusNotFound)
+			w.Write([]byte(`<!DOCTYPE html><html><head><title>mini-iam</title>
+<style>body{font-family:system-ui,sans-serif;display:flex;justify-content:center;align-items:center;min-height:100vh;margin:0;background:#f5f5f5}form{background:#fff;padding:2rem;border-radius:8px;box-shadow:0 2px 8px rgba(0,0,0,0.1);width:320px;text-align:center}h2{margin-top:0}</style>
+</head><body><form><h2>Invalid or expired invite link.</h2></form></body></html>`))
+			return
+		}
+		w.Header().Set("Content-Type", "text/html")
+		fmt.Fprintf(w, `<!DOCTYPE html>
+<html><head><title>Activate Account - mini-iam</title>
+<style>
+body{font-family:system-ui,sans-serif;display:flex;justify-content:center;align-items:center;min-height:100vh;margin:0;background:#f5f5f5}
+form{background:#fff;padding:2rem;border-radius:8px;box-shadow:0 2px 8px rgba(0,0,0,0.1);width:320px}
+h2{margin-top:0;text-align:center}
+label{display:block;margin-top:1rem;font-size:0.9rem;color:#333}
+input[type=password]{width:100%%;padding:0.5rem;margin-top:0.25rem;border:1px solid #ccc;border-radius:4px;box-sizing:border-box}
+button{width:100%%;padding:0.75rem;margin-top:1.5rem;background:#2563eb;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:1rem}
+button:hover{background:#1d4ed8}
+</style></head><body>
+<form method="POST">
+<h2>Activate Account</h2>
+<p style="text-align:center;color:#666;font-size:0.9rem">%s</p>
+<label>Password</label><input type="password" name="password" required minlength="8" autofocus>
+<label>Confirm Password</label><input type="password" name="confirm" required minlength="8">
+<button type="submit">Activate</button>
+</form></body></html>`, escapeHTML(contact.Email))
+
+	case http.MethodPost:
+		var password string
+		ct := r.Header.Get("Content-Type")
+		isJSON := strings.Contains(ct, "application/json")
+		if isJSON {
+			var req struct {
+				Password string `json:"password"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				writeError(w, http.StatusBadRequest, "invalid_request", "invalid JSON body")
+				return
+			}
+			password = req.Password
+		} else {
+			if err := r.ParseForm(); err != nil {
+				writeError(w, http.StatusBadRequest, "invalid_request", "invalid form data")
+				return
+			}
+			password = r.FormValue("password")
+			confirm := r.FormValue("confirm")
+			if password != confirm {
+				w.Header().Set("Content-Type", "text/html")
+				w.WriteHeader(http.StatusBadRequest)
+				w.Write([]byte(`<!DOCTYPE html><html><head><title>mini-iam</title>
+<style>body{font-family:system-ui,sans-serif;display:flex;justify-content:center;align-items:center;min-height:100vh;margin:0;background:#f5f5f5}div{background:#fff;padding:2rem;border-radius:8px;box-shadow:0 2px 8px rgba(0,0,0,0.1);width:320px;text-align:center}</style>
+</head><body><div><h2>Passwords do not match</h2><p><a href="javascript:history.back()">Try again</a></p></div></body></html>`))
+				return
+			}
+		}
+
+		if len(password) < 8 {
+			if isJSON {
+				writeError(w, http.StatusBadRequest, "invalid_request", "password must be at least 8 characters")
+			} else {
+				w.Header().Set("Content-Type", "text/html")
+				w.WriteHeader(http.StatusBadRequest)
+				w.Write([]byte(`<!DOCTYPE html><html><head><title>mini-iam</title>
+<style>body{font-family:system-ui,sans-serif;display:flex;justify-content:center;align-items:center;min-height:100vh;margin:0;background:#f5f5f5}div{background:#fff;padding:2rem;border-radius:8px;box-shadow:0 2px 8px rgba(0,0,0,0.1);width:320px;text-align:center}</style>
+</head><body><div><h2>Password too short</h2><p>Password must be at least 8 characters.</p><p><a href="javascript:history.back()">Try again</a></p></div></body></html>`))
+			}
+			return
+		}
+
+		user, err := h.store.ActivateContact(token, password)
+		if err != nil {
+			if isJSON {
+				writeError(w, http.StatusNotFound, "not_found", err.Error())
+			} else {
+				w.Header().Set("Content-Type", "text/html")
+				w.WriteHeader(http.StatusNotFound)
+				w.Write([]byte(`<!DOCTYPE html><html><head><title>mini-iam</title>
+<style>body{font-family:system-ui,sans-serif;display:flex;justify-content:center;align-items:center;min-height:100vh;margin:0;background:#f5f5f5}div{background:#fff;padding:2rem;border-radius:8px;box-shadow:0 2px 8px rgba(0,0,0,0.1);width:320px;text-align:center}</style>
+</head><body><div><h2>Invalid or expired invite link.</h2></div></body></html>`))
+			}
+			return
+		}
+
+		if isJSON {
+			writeJSON(w, http.StatusOK, map[string]string{"status": "activated", "user_id": user.ID})
+		} else {
+			w.Header().Set("Content-Type", "text/html")
+			w.Write([]byte(`<!DOCTYPE html>
+<html><head><title>Account Activated - mini-iam</title>
+<style>body{font-family:system-ui,sans-serif;display:flex;justify-content:center;align-items:center;min-height:100vh;margin:0;background:#f5f5f5}div{background:#fff;padding:2rem;border-radius:8px;box-shadow:0 2px 8px rgba(0,0,0,0.1);width:320px;text-align:center}</style>
+</head><body><div>
+<h2>Account Activated</h2>
+<p>Your account has been created. You can now sign in.</p>
+</div></body></html>`))
+		}
+
+	default:
+		writeError(w, http.StatusMethodNotAllowed, "invalid_request", "method not allowed")
+	}
 }
 
