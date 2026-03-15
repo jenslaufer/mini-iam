@@ -9,6 +9,8 @@ services:
       PORT: "8080"
       ISSUER_URL: "http://localhost:8080"
       CORS_ORIGINS: "*"
+      ADMIN_EMAIL: "admin@mini-iam.local"
+      ADMIN_PASSWORD: "changeme"
     healthcheck:
       test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:8080/health || exit 1"]
       interval: 30s

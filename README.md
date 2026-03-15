@@ -9,6 +9,8 @@ Minimal Identity and Access Management service. OAuth2 + OpenID Connect in a sin
 - RS256 JWT tokens (RSA key auto-generated, stored in SQLite)
 - Refresh token rotation
 - SQLite database (pure Go, no CGo)
+- Admin account with user/client management
+- Role-based access control (user/admin)
 - CORS middleware
 
 ## Quick Start
@@ -26,6 +28,8 @@ go build -o mini-iam .
 | `PORT` | `8080` | HTTP listen port |
 | `ISSUER_URL` | `http://localhost:8080` | Token issuer / base URL |
 | `CORS_ORIGINS` | `*` | Allowed CORS origins |
+| `ADMIN_EMAIL` | — | Seed admin account email |
+| `ADMIN_PASSWORD` | — | Seed admin account password |
 
 ## Endpoints
 
@@ -42,6 +46,12 @@ go build -o mini-iam .
 | POST | `/revoke` | Token revocation |
 | POST | `/clients` | Register OAuth2 client |
 | GET | `/health` | Health check |
+| GET | `/admin/users` | List all users (admin) |
+| GET | `/admin/users/{id}` | Get user by ID (admin) |
+| PUT | `/admin/users/{id}` | Update user (admin) |
+| DELETE | `/admin/users/{id}` | Delete user (admin) |
+| GET | `/admin/clients` | List all clients (admin) |
+| DELETE | `/admin/clients/{id}` | Delete client (admin) |
 
 ## Project Structure
 

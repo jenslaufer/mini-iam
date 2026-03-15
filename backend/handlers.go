@@ -435,6 +435,7 @@ func (h *Handler) UserInfo(w http.ResponseWriter, r *http.Request) {
 		Sub:   user.ID,
 		Email: user.Email,
 		Name:  user.Name,
+		Role:  user.Role,
 	})
 }
 
@@ -526,6 +527,147 @@ func (h *Handler) CreateClient(w http.ResponseWriter, r *http.Request) {
 		Name:         client.Name,
 		RedirectURIs: client.RedirectURIs,
 	})
+}
+
+// --- Admin ---
+
+func (h *Handler) requireAdmin(w http.ResponseWriter, r *http.Request) (*User, bool) {
+	auth := r.Header.Get("Authorization")
+	if !strings.HasPrefix(auth, "Bearer ") {
+		writeError(w, http.StatusUnauthorized, "invalid_token", "Bearer token required")
+		return nil, false
+	}
+	tokenStr := strings.TrimPrefix(auth, "Bearer ")
+	claims, err := h.tokens.ValidateAccessToken(tokenStr)
+	if err != nil {
+		writeError(w, http.StatusUnauthorized, "invalid_token", "invalid or expired token")
+		return nil, false
+	}
+	role, _ := claims["role"].(string)
+	if role != "admin" {
+		writeError(w, http.StatusForbidden, "insufficient_scope", "admin role required")
+		return nil, false
+	}
+	sub, _ := claims["sub"].(string)
+	user, err := h.store.GetUserByID(sub)
+	if err != nil {
+		writeError(w, http.StatusUnauthorized, "invalid_token", "user not found")
+		return nil, false
+	}
+	return user, true
+}
+
+func (h *Handler) AdminListUsers(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "invalid_request", "method not allowed")
+		return
+	}
+	if _, ok := h.requireAdmin(w, r); !ok {
+		return
+	}
+	users, err := h.store.ListUsers()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "server_error", "failed to list users")
+		return
+	}
+	writeJSON(w, http.StatusOK, users)
+}
+
+func (h *Handler) AdminUserByID(w http.ResponseWriter, r *http.Request) {
+	if _, ok := h.requireAdmin(w, r); !ok {
+		return
+	}
+
+	id := strings.TrimPrefix(r.URL.Path, "/admin/users/")
+	if id == "" {
+		writeError(w, http.StatusBadRequest, "invalid_request", "user id required")
+		return
+	}
+
+	switch r.Method {
+	case http.MethodGet:
+		user, err := h.store.GetUserByID(id)
+		if err != nil {
+			writeError(w, http.StatusNotFound, "not_found", "user not found")
+			return
+		}
+		writeJSON(w, http.StatusOK, user)
+
+	case http.MethodPut:
+		var req struct {
+			Name string `json:"name"`
+			Role string `json:"role"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid_request", "invalid JSON body")
+			return
+		}
+		if req.Role != "" && req.Role != "user" && req.Role != "admin" {
+			writeError(w, http.StatusBadRequest, "invalid_request", "role must be 'user' or 'admin'")
+			return
+		}
+		user, err := h.store.UpdateUser(id, req.Name, req.Role)
+		if err != nil {
+			writeError(w, http.StatusNotFound, "not_found", "user not found")
+			return
+		}
+		writeJSON(w, http.StatusOK, user)
+
+	case http.MethodDelete:
+		auth := r.Header.Get("Authorization")
+		tokenStr := strings.TrimPrefix(auth, "Bearer ")
+		claims, _ := h.tokens.ValidateAccessToken(tokenStr)
+		adminID, _ := claims["sub"].(string)
+
+		if id == adminID {
+			writeError(w, http.StatusBadRequest, "invalid_request", "cannot delete yourself")
+			return
+		}
+		if err := h.store.DeleteUser(id); err != nil {
+			writeError(w, http.StatusNotFound, "not_found", "user not found")
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+
+	default:
+		writeError(w, http.StatusMethodNotAllowed, "invalid_request", "method not allowed")
+	}
+}
+
+func (h *Handler) AdminListClients(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "invalid_request", "method not allowed")
+		return
+	}
+	if _, ok := h.requireAdmin(w, r); !ok {
+		return
+	}
+	clients, err := h.store.ListClients()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "server_error", "failed to list clients")
+		return
+	}
+	writeJSON(w, http.StatusOK, clients)
+}
+
+func (h *Handler) AdminDeleteClient(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodDelete {
+		writeError(w, http.StatusMethodNotAllowed, "invalid_request", "method not allowed")
+		return
+	}
+	if _, ok := h.requireAdmin(w, r); !ok {
+		return
+	}
+	id := strings.TrimPrefix(r.URL.Path, "/admin/clients/")
+	if id == "" {
+		writeError(w, http.StatusBadRequest, "invalid_request", "client id required")
+		return
+	}
+	if err := h.store.DeleteClient(id); err != nil {
+		writeError(w, http.StatusNotFound, "not_found", "client not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
 func isValidRedirectURI(client *Client, uri string) bool {

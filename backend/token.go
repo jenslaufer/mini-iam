@@ -30,6 +30,7 @@ func (ts *TokenService) CreateAccessToken(user *User, audience string) (string, 
 		"iat":   now.Unix(),
 		"email": user.Email,
 		"name":  user.Name,
+		"role":  user.Role,
 	}
 
 	token := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
@@ -47,6 +48,7 @@ func (ts *TokenService) CreateIDToken(user *User, audience, nonce string) (strin
 		"iat":   now.Unix(),
 		"email": user.Email,
 		"name":  user.Name,
+		"role":  user.Role,
 	}
 	if nonce != "" {
 		claims["nonce"] = nonce

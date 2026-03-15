@@ -42,6 +42,10 @@ func SetupServer(store *Store, tokenService *TokenService) http.Handler {
 	mux.HandleFunc("/.well-known/openid-configuration", h.Discovery)
 	mux.HandleFunc("/revoke", h.Revoke)
 	mux.HandleFunc("/clients", h.CreateClient)
+	mux.HandleFunc("/admin/users", h.AdminListUsers)
+	mux.HandleFunc("/admin/users/", h.AdminUserByID)
+	mux.HandleFunc("/admin/clients", h.AdminListClients)
+	mux.HandleFunc("/admin/clients/", h.AdminDeleteClient)
 
 	return CORSMiddleware("*")(mux)
 }
@@ -1779,5 +1783,792 @@ func TestEndToEndFlow(t *testing.T) {
 			t.Error("revoked refresh token should not produce new tokens")
 		}
 		badResp.Body.Close()
+	})
+}
+
+// ---------------------------------------------------------------------------
+// Admin test infrastructure
+// ---------------------------------------------------------------------------
+
+// testEnv holds a test server together with the underlying store so admin
+// tests can call store methods (e.g. SeedAdmin) directly.
+type testEnv struct {
+	srv   *httptest.Server
+	store *Store
+}
+
+// newTestEnv creates a fully isolated in-memory environment that exposes both
+// the HTTP test server and the backing store.  It keeps newTestServer working
+// unchanged for all existing tests.
+func newTestEnv(t *testing.T) *testEnv {
+	t.Helper()
+	store, err := NewStore(":memory:")
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	tokenService := NewTokenService(key, "http://test-issuer")
+	handler := SetupServer(store, tokenService)
+	srv := httptest.NewServer(handler)
+	t.Cleanup(func() {
+		srv.Close()
+		store.Close()
+	})
+	return &testEnv{srv: srv, store: store}
+}
+
+// loginAsAdmin seeds an admin user, logs in, and returns the Bearer access token.
+func loginAsAdmin(t *testing.T, env *testEnv) string {
+	t.Helper()
+	if err := env.store.SeedAdmin("admin@test.com", "adminpass123", "Admin"); err != nil {
+		t.Fatalf("SeedAdmin: %v", err)
+	}
+	resp := doJSON(t, env.srv, "/login", map[string]any{
+		"email":    "admin@test.com",
+		"password": "adminpass123",
+	})
+	assertStatus(t, resp, http.StatusOK)
+	var tr TokenResponse
+	decodeJSON(t, resp, &tr)
+	if tr.AccessToken == "" {
+		t.Fatal("loginAsAdmin: empty access_token")
+	}
+	return tr.AccessToken
+}
+
+// doRequest sends an HTTP request with an optional JSON body and optional
+// Authorization header.  method is e.g. "GET", "PUT", "DELETE".
+func doRequest(t *testing.T, srv *httptest.Server, method, path, token, body string) *http.Response {
+	t.Helper()
+	var bodyReader io.Reader
+	if body != "" {
+		bodyReader = strings.NewReader(body)
+	}
+	req, err := http.NewRequest(method, srv.URL+path, bodyReader)
+	if err != nil {
+		t.Fatalf("NewRequest %s %s: %v", method, path, err)
+	}
+	if body != "" {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	}}
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("%s %s: %v", method, path, err)
+	}
+	return resp
+}
+
+// ---------------------------------------------------------------------------
+// TestAdminSeed
+// ---------------------------------------------------------------------------
+
+func TestAdminSeed(t *testing.T) {
+	t.Run("SeedAdmin creates admin user", func(t *testing.T) {
+		env := newTestEnv(t)
+
+		err := env.store.SeedAdmin("seed@test.com", "seedpass123", "Seeded Admin")
+		if err != nil {
+			t.Fatalf("SeedAdmin: %v", err)
+		}
+
+		// User must be able to log in.
+		resp := doJSON(t, env.srv, "/login", map[string]any{
+			"email":    "seed@test.com",
+			"password": "seedpass123",
+		})
+		assertStatus(t, resp, http.StatusOK)
+		resp.Body.Close()
+	})
+
+	t.Run("SeedAdmin is idempotent", func(t *testing.T) {
+		env := newTestEnv(t)
+
+		if err := env.store.SeedAdmin("idem@test.com", "idempass123", "Idem Admin"); err != nil {
+			t.Fatalf("first SeedAdmin: %v", err)
+		}
+		if err := env.store.SeedAdmin("idem@test.com", "idempass123", "Idem Admin"); err != nil {
+			t.Fatalf("second SeedAdmin: %v", err)
+		}
+	})
+
+	t.Run("seeded admin login token carries role admin", func(t *testing.T) {
+		env := newTestEnv(t)
+
+		token := loginAsAdmin(t, env)
+		claims := verifyJWT(t, env.srv, token)
+
+		role, _ := claims["role"].(string)
+		if role != "admin" {
+			t.Errorf("role claim: got %q, want admin", role)
+		}
+	})
+}
+
+// ---------------------------------------------------------------------------
+// TestAdminAuthentication
+// ---------------------------------------------------------------------------
+
+func TestAdminAuthentication(t *testing.T) {
+	adminEndpoints := []struct {
+		method string
+		path   string
+	}{
+		{"GET", "/admin/users"},
+		{"GET", "/admin/clients"},
+	}
+
+	t.Run("admin endpoints return 401 without token", func(t *testing.T) {
+		env := newTestEnv(t)
+
+		for _, ep := range adminEndpoints {
+			t.Run(ep.method+" "+ep.path, func(t *testing.T) {
+				resp := doRequest(t, env.srv, ep.method, ep.path, "", "")
+				if resp.StatusCode != http.StatusUnauthorized {
+					body := readBody(resp)
+					t.Errorf("expected 401, got %d (body=%q)", resp.StatusCode, body)
+				} else {
+					resp.Body.Close()
+				}
+			})
+		}
+	})
+
+	t.Run("admin endpoints return 401 with invalid token", func(t *testing.T) {
+		env := newTestEnv(t)
+
+		for _, ep := range adminEndpoints {
+			t.Run(ep.method+" "+ep.path, func(t *testing.T) {
+				resp := doRequest(t, env.srv, ep.method, ep.path, "this.is.not.valid", "")
+				if resp.StatusCode != http.StatusUnauthorized {
+					body := readBody(resp)
+					t.Errorf("expected 401, got %d (body=%q)", resp.StatusCode, body)
+				} else {
+					resp.Body.Close()
+				}
+			})
+		}
+	})
+
+	t.Run("admin endpoints return 403 with non-admin token", func(t *testing.T) {
+		env := newTestEnv(t)
+
+		registerUser(t, env.srv, "regular@test.com", "pass1234", "Regular")
+		tr := loginUser(t, env.srv, "regular@test.com", "pass1234")
+
+		for _, ep := range adminEndpoints {
+			t.Run(ep.method+" "+ep.path, func(t *testing.T) {
+				resp := doRequest(t, env.srv, ep.method, ep.path, tr.AccessToken, "")
+				if resp.StatusCode != http.StatusForbidden {
+					body := readBody(resp)
+					t.Errorf("expected 403, got %d (body=%q)", resp.StatusCode, body)
+				} else {
+					resp.Body.Close()
+				}
+			})
+		}
+	})
+
+	t.Run("admin endpoints return 200 with admin token", func(t *testing.T) {
+		env := newTestEnv(t)
+
+		token := loginAsAdmin(t, env)
+
+		for _, ep := range adminEndpoints {
+			t.Run(ep.method+" "+ep.path, func(t *testing.T) {
+				resp := doRequest(t, env.srv, ep.method, ep.path, token, "")
+				if resp.StatusCode != http.StatusOK {
+					body := readBody(resp)
+					t.Errorf("expected 200, got %d (body=%q)", resp.StatusCode, body)
+				} else {
+					resp.Body.Close()
+				}
+			})
+		}
+	})
+}
+
+// ---------------------------------------------------------------------------
+// TestAdminListUsers
+// ---------------------------------------------------------------------------
+
+func TestAdminListUsers(t *testing.T) {
+	t.Run("returns all users including admin", func(t *testing.T) {
+		env := newTestEnv(t)
+
+		token := loginAsAdmin(t, env)
+
+		resp := doRequest(t, env.srv, "GET", "/admin/users", token, "")
+		assertStatus(t, resp, http.StatusOK)
+
+		var users []map[string]any
+		decodeJSON(t, resp, &users)
+
+		if len(users) == 0 {
+			t.Fatal("expected at least the admin user in the list")
+		}
+
+		found := false
+		for _, u := range users {
+			if u["email"] == "admin@test.com" {
+				found = true
+				if u["role"] != "admin" {
+					t.Errorf("admin user role: got %v, want admin", u["role"])
+				}
+			}
+		}
+		if !found {
+			t.Error("admin user not found in /admin/users response")
+		}
+	})
+
+	t.Run("newly registered users appear in list", func(t *testing.T) {
+		env := newTestEnv(t)
+
+		token := loginAsAdmin(t, env)
+		registerUser(t, env.srv, "newuser@test.com", "pass1234", "New User")
+
+		resp := doRequest(t, env.srv, "GET", "/admin/users", token, "")
+		assertStatus(t, resp, http.StatusOK)
+
+		var users []map[string]any
+		decodeJSON(t, resp, &users)
+
+		found := false
+		for _, u := range users {
+			if u["email"] == "newuser@test.com" {
+				found = true
+			}
+		}
+		if !found {
+			t.Error("newly registered user not found in /admin/users response")
+		}
+	})
+
+	t.Run("response objects include required fields", func(t *testing.T) {
+		env := newTestEnv(t)
+
+		token := loginAsAdmin(t, env)
+
+		resp := doRequest(t, env.srv, "GET", "/admin/users", token, "")
+		assertStatus(t, resp, http.StatusOK)
+
+		var users []map[string]any
+		decodeJSON(t, resp, &users)
+
+		for _, u := range users {
+			for _, field := range []string{"id", "email", "name", "role", "created_at"} {
+				if _, ok := u[field]; !ok {
+					t.Errorf("user object missing field %q: %v", field, u)
+				}
+			}
+			if _, ok := u["password_hash"]; ok {
+				t.Error("password_hash must not be exposed in admin list")
+			}
+		}
+	})
+}
+
+// ---------------------------------------------------------------------------
+// TestAdminGetUser
+// ---------------------------------------------------------------------------
+
+func TestAdminGetUser(t *testing.T) {
+	t.Run("returns specific user by ID", func(t *testing.T) {
+		env := newTestEnv(t)
+
+		token := loginAsAdmin(t, env)
+		user := registerUser(t, env.srv, "getme@test.com", "pass1234", "Get Me")
+		userID, _ := user["id"].(string)
+
+		resp := doRequest(t, env.srv, "GET", "/admin/users/"+userID, token, "")
+		assertStatus(t, resp, http.StatusOK)
+
+		var got map[string]any
+		decodeJSON(t, resp, &got)
+
+		if got["id"] != userID {
+			t.Errorf("id: got %v, want %v", got["id"], userID)
+		}
+		if got["email"] != "getme@test.com" {
+			t.Errorf("email: got %v", got["email"])
+		}
+	})
+
+	t.Run("returns 404 for non-existent ID", func(t *testing.T) {
+		env := newTestEnv(t)
+
+		token := loginAsAdmin(t, env)
+
+		resp := doRequest(t, env.srv, "GET", "/admin/users/does-not-exist-at-all", token, "")
+		assertStatus(t, resp, http.StatusNotFound)
+		resp.Body.Close()
+	})
+}
+
+// ---------------------------------------------------------------------------
+// TestAdminUpdateUser
+// ---------------------------------------------------------------------------
+
+func TestAdminUpdateUser(t *testing.T) {
+	t.Run("update name only", func(t *testing.T) {
+		env := newTestEnv(t)
+
+		token := loginAsAdmin(t, env)
+		user := registerUser(t, env.srv, "upname@test.com", "pass1234", "Original Name")
+		userID, _ := user["id"].(string)
+
+		resp := doRequest(t, env.srv, "PUT", "/admin/users/"+userID, token,
+			`{"name":"Updated Name"}`)
+		assertStatus(t, resp, http.StatusOK)
+
+		var updated map[string]any
+		decodeJSON(t, resp, &updated)
+
+		if updated["name"] != "Updated Name" {
+			t.Errorf("name: got %v, want Updated Name", updated["name"])
+		}
+		if updated["role"] != "user" {
+			t.Errorf("role should remain user, got %v", updated["role"])
+		}
+	})
+
+	t.Run("update role only", func(t *testing.T) {
+		env := newTestEnv(t)
+
+		token := loginAsAdmin(t, env)
+		user := registerUser(t, env.srv, "uprole@test.com", "pass1234", "Role Target")
+		userID, _ := user["id"].(string)
+
+		resp := doRequest(t, env.srv, "PUT", "/admin/users/"+userID, token,
+			`{"role":"admin"}`)
+		assertStatus(t, resp, http.StatusOK)
+
+		var updated map[string]any
+		decodeJSON(t, resp, &updated)
+
+		if updated["role"] != "admin" {
+			t.Errorf("role: got %v, want admin", updated["role"])
+		}
+		if updated["name"] != "Role Target" {
+			t.Errorf("name changed unexpectedly: got %v", updated["name"])
+		}
+	})
+
+	t.Run("update both name and role", func(t *testing.T) {
+		env := newTestEnv(t)
+
+		token := loginAsAdmin(t, env)
+		user := registerUser(t, env.srv, "upboth@test.com", "pass1234", "Before")
+		userID, _ := user["id"].(string)
+
+		resp := doRequest(t, env.srv, "PUT", "/admin/users/"+userID, token,
+			`{"name":"After","role":"admin"}`)
+		assertStatus(t, resp, http.StatusOK)
+
+		var updated map[string]any
+		decodeJSON(t, resp, &updated)
+
+		if updated["name"] != "After" {
+			t.Errorf("name: got %v, want After", updated["name"])
+		}
+		if updated["role"] != "admin" {
+			t.Errorf("role: got %v, want admin", updated["role"])
+		}
+	})
+
+	t.Run("invalid role returns 400", func(t *testing.T) {
+		env := newTestEnv(t)
+
+		token := loginAsAdmin(t, env)
+		user := registerUser(t, env.srv, "badrole@test.com", "pass1234", "Bad Role")
+		userID, _ := user["id"].(string)
+
+		resp := doRequest(t, env.srv, "PUT", "/admin/users/"+userID, token,
+			`{"role":"superadmin"}`)
+		assertStatus(t, resp, http.StatusBadRequest)
+		resp.Body.Close()
+	})
+
+	t.Run("non-existent user returns 404", func(t *testing.T) {
+		env := newTestEnv(t)
+
+		token := loginAsAdmin(t, env)
+
+		resp := doRequest(t, env.srv, "PUT", "/admin/users/does-not-exist", token,
+			`{"name":"Ghost"}`)
+		assertStatus(t, resp, http.StatusNotFound)
+		resp.Body.Close()
+	})
+}
+
+// ---------------------------------------------------------------------------
+// TestAdminDeleteUser
+// ---------------------------------------------------------------------------
+
+func TestAdminDeleteUser(t *testing.T) {
+	t.Run("delete user succeeds", func(t *testing.T) {
+		env := newTestEnv(t)
+
+		token := loginAsAdmin(t, env)
+		user := registerUser(t, env.srv, "deleteme@test.com", "pass1234", "Delete Me")
+		userID, _ := user["id"].(string)
+
+		resp := doRequest(t, env.srv, "DELETE", "/admin/users/"+userID, token, "")
+		assertStatus(t, resp, http.StatusOK)
+
+		var body map[string]any
+		decodeJSON(t, resp, &body)
+
+		if body["status"] != "deleted" {
+			t.Errorf("status: got %v, want deleted", body["status"])
+		}
+	})
+
+	t.Run("deleted user can no longer login", func(t *testing.T) {
+		env := newTestEnv(t)
+
+		token := loginAsAdmin(t, env)
+		registerUser(t, env.srv, "gone@test.com", "pass1234", "Gone")
+
+		// Fetch user ID via list.
+		listResp := doRequest(t, env.srv, "GET", "/admin/users", token, "")
+		assertStatus(t, listResp, http.StatusOK)
+		var users []map[string]any
+		decodeJSON(t, listResp, &users)
+
+		var goneID string
+		for _, u := range users {
+			if u["email"] == "gone@test.com" {
+				goneID, _ = u["id"].(string)
+			}
+		}
+		if goneID == "" {
+			t.Fatal("could not find gone@test.com in admin user list")
+		}
+
+		delResp := doRequest(t, env.srv, "DELETE", "/admin/users/"+goneID, token, "")
+		assertStatus(t, delResp, http.StatusOK)
+		delResp.Body.Close()
+
+		loginResp := doJSON(t, env.srv, "/login", map[string]any{
+			"email":    "gone@test.com",
+			"password": "pass1234",
+		})
+		if loginResp.StatusCode == http.StatusOK {
+			t.Error("deleted user should not be able to login")
+		}
+		loginResp.Body.Close()
+	})
+
+	t.Run("cannot delete yourself returns 400", func(t *testing.T) {
+		env := newTestEnv(t)
+
+		token := loginAsAdmin(t, env)
+
+		// Find the admin user's own ID via userinfo.
+		uiResp := doRequest(t, env.srv, "GET", "/userinfo", token, "")
+		assertStatus(t, uiResp, http.StatusOK)
+		var ui UserInfoResponse
+		decodeJSON(t, uiResp, &ui)
+
+		resp := doRequest(t, env.srv, "DELETE", "/admin/users/"+ui.Sub, token, "")
+		assertStatus(t, resp, http.StatusBadRequest)
+
+		var errBody map[string]any
+		decodeJSON(t, resp, &errBody)
+		msg, _ := errBody["error"].(string)
+		if msg == "" {
+			t.Error("expected non-empty error message when deleting yourself")
+		}
+	})
+
+	t.Run("non-existent user returns 404", func(t *testing.T) {
+		env := newTestEnv(t)
+
+		token := loginAsAdmin(t, env)
+
+		resp := doRequest(t, env.srv, "DELETE", "/admin/users/no-such-user", token, "")
+		assertStatus(t, resp, http.StatusNotFound)
+		resp.Body.Close()
+	})
+}
+
+// ---------------------------------------------------------------------------
+// TestAdminListClients
+// ---------------------------------------------------------------------------
+
+func TestAdminListClients(t *testing.T) {
+	t.Run("returns all clients", func(t *testing.T) {
+		env := newTestEnv(t)
+
+		token := loginAsAdmin(t, env)
+		registerClient(t, env.srv, "List App", []string{"http://localhost:3000/callback"})
+
+		resp := doRequest(t, env.srv, "GET", "/admin/clients", token, "")
+		assertStatus(t, resp, http.StatusOK)
+
+		var clients []map[string]any
+		decodeJSON(t, resp, &clients)
+
+		if len(clients) == 0 {
+			t.Fatal("expected at least one client in list")
+		}
+	})
+
+	t.Run("newly registered clients appear in list", func(t *testing.T) {
+		env := newTestEnv(t)
+
+		token := loginAsAdmin(t, env)
+		cr := registerClient(t, env.srv, "New Client", []string{"http://localhost:4000/callback"})
+
+		resp := doRequest(t, env.srv, "GET", "/admin/clients", token, "")
+		assertStatus(t, resp, http.StatusOK)
+
+		var clients []map[string]any
+		decodeJSON(t, resp, &clients)
+
+		found := false
+		for _, c := range clients {
+			if c["client_id"] == cr.ClientID {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("newly created client %q not found in admin list", cr.ClientID)
+		}
+	})
+
+	t.Run("response objects include required fields", func(t *testing.T) {
+		env := newTestEnv(t)
+
+		token := loginAsAdmin(t, env)
+		registerClient(t, env.srv, "Field Check App", []string{"http://localhost:5000/callback"})
+
+		resp := doRequest(t, env.srv, "GET", "/admin/clients", token, "")
+		assertStatus(t, resp, http.StatusOK)
+
+		var clients []map[string]any
+		decodeJSON(t, resp, &clients)
+
+		for _, c := range clients {
+			for _, field := range []string{"client_id", "name", "redirect_uris", "created_at"} {
+				if _, ok := c[field]; !ok {
+					t.Errorf("client object missing field %q: %v", field, c)
+				}
+			}
+			if _, ok := c["secret_hash"]; ok {
+				t.Error("secret_hash must not be exposed in admin client list")
+			}
+			if _, ok := c["client_secret"]; ok {
+				t.Error("client_secret must not be exposed in admin client list")
+			}
+		}
+	})
+}
+
+// ---------------------------------------------------------------------------
+// TestAdminDeleteClient
+// ---------------------------------------------------------------------------
+
+func TestAdminDeleteClient(t *testing.T) {
+	t.Run("delete client succeeds", func(t *testing.T) {
+		env := newTestEnv(t)
+
+		token := loginAsAdmin(t, env)
+		cr := registerClient(t, env.srv, "Doomed Client", []string{"http://localhost:3000/callback"})
+
+		resp := doRequest(t, env.srv, "DELETE", "/admin/clients/"+cr.ClientID, token, "")
+		assertStatus(t, resp, http.StatusOK)
+
+		var body map[string]any
+		decodeJSON(t, resp, &body)
+
+		if body["status"] != "deleted" {
+			t.Errorf("status: got %v, want deleted", body["status"])
+		}
+	})
+
+	t.Run("deleted client can no longer be used for auth", func(t *testing.T) {
+		env := newTestEnv(t)
+
+		adminToken := loginAsAdmin(t, env)
+		registerUser(t, env.srv, "authuser@test.com", "pass1234", "Auth User")
+		cr := registerClient(t, env.srv, "Soon Gone", []string{"http://localhost:3000/callback"})
+
+		// Delete the client.
+		delResp := doRequest(t, env.srv, "DELETE", "/admin/clients/"+cr.ClientID, adminToken, "")
+		assertStatus(t, delResp, http.StatusOK)
+		delResp.Body.Close()
+
+		// Attempt to use the deleted client in the auth flow.
+		values := url.Values{
+			"email":         {"authuser@test.com"},
+			"password":      {"pass1234"},
+			"client_id":     {cr.ClientID},
+			"redirect_uri":  {cr.RedirectURIs[0]},
+			"response_type": {"code"},
+			"scope":         {"openid"},
+			"state":         {"s"},
+		}
+		authResp := doForm(t, env.srv, "/authorize", values)
+		defer authResp.Body.Close()
+
+		if authResp.StatusCode == http.StatusFound {
+			// A redirect is only acceptable if it carries an error parameter.
+			loc := authResp.Header.Get("Location")
+			u, _ := url.Parse(loc)
+			if u.Query().Get("error") == "" {
+				t.Errorf("deleted client produced a valid auth redirect: %q", loc)
+			}
+		} else if authResp.StatusCode != http.StatusBadRequest && authResp.StatusCode != http.StatusUnauthorized {
+			t.Errorf("expected 400/401 or error redirect for deleted client, got %d", authResp.StatusCode)
+		}
+	})
+
+	t.Run("non-existent client returns 404", func(t *testing.T) {
+		env := newTestEnv(t)
+
+		token := loginAsAdmin(t, env)
+
+		resp := doRequest(t, env.srv, "DELETE", "/admin/clients/no-such-client", token, "")
+		assertStatus(t, resp, http.StatusNotFound)
+		resp.Body.Close()
+	})
+}
+
+// ---------------------------------------------------------------------------
+// TestRoleInTokens
+// ---------------------------------------------------------------------------
+
+func TestRoleInTokens(t *testing.T) {
+	t.Run("login token includes role claim for regular user", func(t *testing.T) {
+		env := newTestEnv(t)
+
+		registerUser(t, env.srv, "rolecheck@test.com", "pass1234", "Role Check")
+		tr := loginUser(t, env.srv, "rolecheck@test.com", "pass1234")
+
+		claims := verifyJWT(t, env.srv, tr.AccessToken)
+		role, _ := claims["role"].(string)
+		if role != "user" {
+			t.Errorf("role claim: got %q, want user", role)
+		}
+	})
+
+	t.Run("login token includes role admin for admin user", func(t *testing.T) {
+		env := newTestEnv(t)
+
+		token := loginAsAdmin(t, env)
+		claims := verifyJWT(t, env.srv, token)
+		role, _ := claims["role"].(string)
+		if role != "admin" {
+			t.Errorf("role claim: got %q, want admin", role)
+		}
+	})
+
+	t.Run("OAuth2 flow token includes role claim", func(t *testing.T) {
+		env := newTestEnv(t)
+
+		registerUser(t, env.srv, "oauthrole@test.com", "pass1234", "OAuth Role")
+		client := registerClient(t, env.srv, "Role App", []string{"http://localhost:3000/callback"})
+		verifier, challenge := pkceChallenge(t)
+
+		loc := authorizeCode(t, env.srv, "oauthrole@test.com", "pass1234", client, verifier, challenge)
+		code := extractCode(t, loc)
+		tr := exchangeCode(t, env.srv, code, client.RedirectURIs[0], client.ClientID, client.ClientSecret, verifier)
+
+		claims := verifyJWT(t, env.srv, tr.AccessToken)
+		if _, ok := claims["role"]; !ok {
+			t.Error("OAuth2 access_token missing role claim")
+		}
+		role, _ := claims["role"].(string)
+		if role != "user" {
+			t.Errorf("role claim in OAuth2 token: got %q, want user", role)
+		}
+	})
+
+	t.Run("UserInfo returns role field for regular user", func(t *testing.T) {
+		env := newTestEnv(t)
+
+		registerUser(t, env.srv, "uirole@test.com", "pass1234", "UI Role")
+		tr := loginUser(t, env.srv, "uirole@test.com", "pass1234")
+
+		resp := doGet(t, env.srv, "/userinfo", map[string]string{
+			"Authorization": "Bearer " + tr.AccessToken,
+		})
+		assertStatus(t, resp, http.StatusOK)
+
+		var ui UserInfoResponse
+		decodeJSON(t, resp, &ui)
+
+		if ui.Role == "" {
+			t.Error("userinfo response missing role field")
+		}
+		if ui.Role != "user" {
+			t.Errorf("userinfo role: got %q, want user", ui.Role)
+		}
+	})
+
+	t.Run("UserInfo returns role admin for admin user", func(t *testing.T) {
+		env := newTestEnv(t)
+
+		token := loginAsAdmin(t, env)
+
+		resp := doGet(t, env.srv, "/userinfo", map[string]string{
+			"Authorization": "Bearer " + token,
+		})
+		assertStatus(t, resp, http.StatusOK)
+
+		var ui UserInfoResponse
+		decodeJSON(t, resp, &ui)
+
+		if ui.Role != "admin" {
+			t.Errorf("userinfo role for admin: got %q, want admin", ui.Role)
+		}
+	})
+
+	t.Run("promoted user token reflects new role after re-login", func(t *testing.T) {
+		env := newTestEnv(t)
+
+		adminToken := loginAsAdmin(t, env)
+		registerUser(t, env.srv, "promote@test.com", "pass1234", "Promote Me")
+
+		// Find user ID.
+		listResp := doRequest(t, env.srv, "GET", "/admin/users", adminToken, "")
+		assertStatus(t, listResp, http.StatusOK)
+		var users []map[string]any
+		decodeJSON(t, listResp, &users)
+
+		var promoteID string
+		for _, u := range users {
+			if u["email"] == "promote@test.com" {
+				promoteID, _ = u["id"].(string)
+			}
+		}
+		if promoteID == "" {
+			t.Fatal("could not find promote@test.com in admin user list")
+		}
+
+		// Promote to admin.
+		putResp := doRequest(t, env.srv, "PUT", "/admin/users/"+promoteID, adminToken,
+			`{"role":"admin"}`)
+		assertStatus(t, putResp, http.StatusOK)
+		putResp.Body.Close()
+
+		// Re-login and verify the token now carries role=admin.
+		tr := loginUser(t, env.srv, "promote@test.com", "pass1234")
+		claims := verifyJWT(t, env.srv, tr.AccessToken)
+		role, _ := claims["role"].(string)
+		if role != "admin" {
+			t.Errorf("promoted user token role: got %q, want admin", role)
+		}
 	})
 }

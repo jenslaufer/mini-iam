@@ -49,6 +49,7 @@ func (s *Store) migrate() error {
 		email TEXT UNIQUE NOT NULL,
 		password_hash TEXT NOT NULL,
 		name TEXT NOT NULL,
+		role TEXT NOT NULL DEFAULT 'user',
 		created_at DATETIME NOT NULL
 	);
 
@@ -89,7 +90,14 @@ func (s *Store) migrate() error {
 	);
 	`
 	_, err := s.db.Exec(schema)
-	return err
+	if err != nil {
+		return err
+	}
+
+	// Add role column if missing (existing databases)
+	s.db.Exec("ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'user'")
+
+	return nil
 }
 
 func (s *Store) Close() error {
@@ -143,12 +151,13 @@ func (s *Store) CreateUser(email, password, name string) (*User, error) {
 		Email:        email,
 		PasswordHash: string(hash),
 		Name:         name,
+		Role:         "user",
 		CreatedAt:    time.Now().UTC(),
 	}
 
 	_, err = s.db.Exec(
-		"INSERT INTO users (id, email, password_hash, name, created_at) VALUES (?, ?, ?, ?, ?)",
-		u.ID, u.Email, u.PasswordHash, u.Name, u.CreatedAt,
+		"INSERT INTO users (id, email, password_hash, name, role, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+		u.ID, u.Email, u.PasswordHash, u.Name, u.Role, u.CreatedAt,
 	)
 	if err != nil {
 		return nil, err
@@ -159,8 +168,8 @@ func (s *Store) CreateUser(email, password, name string) (*User, error) {
 func (s *Store) GetUserByEmail(email string) (*User, error) {
 	u := &User{}
 	err := s.db.QueryRow(
-		"SELECT id, email, password_hash, name, created_at FROM users WHERE email = ?", email,
-	).Scan(&u.ID, &u.Email, &u.PasswordHash, &u.Name, &u.CreatedAt)
+		"SELECT id, email, password_hash, name, role, created_at FROM users WHERE email = ?", email,
+	).Scan(&u.ID, &u.Email, &u.PasswordHash, &u.Name, &u.Role, &u.CreatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -170,8 +179,8 @@ func (s *Store) GetUserByEmail(email string) (*User, error) {
 func (s *Store) GetUserByID(id string) (*User, error) {
 	u := &User{}
 	err := s.db.QueryRow(
-		"SELECT id, email, password_hash, name, created_at FROM users WHERE id = ?", id,
-	).Scan(&u.ID, &u.Email, &u.PasswordHash, &u.Name, &u.CreatedAt)
+		"SELECT id, email, password_hash, name, role, created_at FROM users WHERE id = ?", id,
+	).Scan(&u.ID, &u.Email, &u.PasswordHash, &u.Name, &u.Role, &u.CreatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -187,6 +196,101 @@ func (s *Store) AuthenticateUser(email, password string) (*User, error) {
 		return nil, fmt.Errorf("invalid credentials")
 	}
 	return u, nil
+}
+
+func (s *Store) SeedAdmin(email, password, name string) error {
+	existing, err := s.GetUserByEmail(email)
+	if err == nil {
+		_, err = s.db.Exec("UPDATE users SET role = 'admin' WHERE id = ?", existing.ID)
+		return err
+	}
+	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.Exec(
+		"INSERT INTO users (id, email, password_hash, name, role, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+		uuid.NewString(), email, string(hash), name, "admin", time.Now().UTC(),
+	)
+	return err
+}
+
+func (s *Store) ListUsers() ([]User, error) {
+	rows, err := s.db.Query("SELECT id, email, name, role, created_at FROM users ORDER BY created_at DESC")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var users []User
+	for rows.Next() {
+		var u User
+		if err := rows.Scan(&u.ID, &u.Email, &u.Name, &u.Role, &u.CreatedAt); err != nil {
+			return nil, err
+		}
+		users = append(users, u)
+	}
+	return users, rows.Err()
+}
+
+func (s *Store) UpdateUser(id string, name, role string) (*User, error) {
+	user, err := s.GetUserByID(id)
+	if err != nil {
+		return nil, err
+	}
+	if name != "" {
+		user.Name = name
+	}
+	if role != "" {
+		user.Role = role
+	}
+	_, err = s.db.Exec("UPDATE users SET name = ?, role = ? WHERE id = ?", user.Name, user.Role, user.ID)
+	if err != nil {
+		return nil, err
+	}
+	return user, nil
+}
+
+func (s *Store) DeleteUser(id string) error {
+	result, err := s.db.Exec("DELETE FROM users WHERE id = ?", id)
+	if err != nil {
+		return err
+	}
+	rows, _ := result.RowsAffected()
+	if rows == 0 {
+		return fmt.Errorf("user not found")
+	}
+	return nil
+}
+
+func (s *Store) ListClients() ([]Client, error) {
+	rows, err := s.db.Query("SELECT id, name, redirect_uris, created_at FROM clients ORDER BY created_at DESC")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var clients []Client
+	for rows.Next() {
+		var c Client
+		var urisJSON string
+		if err := rows.Scan(&c.ID, &c.Name, &urisJSON, &c.CreatedAt); err != nil {
+			return nil, err
+		}
+		json.Unmarshal([]byte(urisJSON), &c.RedirectURIs)
+		clients = append(clients, c)
+	}
+	return clients, rows.Err()
+}
+
+func (s *Store) DeleteClient(id string) error {
+	result, err := s.db.Exec("DELETE FROM clients WHERE id = ?", id)
+	if err != nil {
+		return err
+	}
+	rows, _ := result.RowsAffected()
+	if rows == 0 {
+		return fmt.Errorf("client not found")
+	}
+	return nil
 }
 
 // --- Clients ---
