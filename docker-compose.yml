@@ -1,13 +1,13 @@
 services:
-  mini-iam:
+  launch-kit:
     build: ./backend
     volumes:
-      - mini-iam-data:/data
+      - launch-kit-data:/data
     environment:
       PORT: "8080"
       ISSUER_URL: "http://localhost:3000/auth"
       CORS_ORIGINS: "*"
-      ADMIN_EMAIL: "admin@mini-iam.local"
+      ADMIN_EMAIL: "admin@launch-kit.local"
       ADMIN_PASSWORD: "changeme"
     healthcheck:
       test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:8080/health || exit 1"]
@@ -22,9 +22,9 @@ services:
     ports:
       - "3000:3000"
     depends_on:
-      mini-iam:
+      launch-kit:
         condition: service_healthy
     restart: unless-stopped
 
 volumes:
-  mini-iam-data:
+  launch-kit-data:

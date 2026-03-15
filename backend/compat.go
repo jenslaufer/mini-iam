@@ -9,8 +9,8 @@ import (
 	"crypto/rsa"
 	"net/http"
 
-	"github.com/jenslaufer/mini-iam/iam"
-	"github.com/jenslaufer/mini-iam/marketing"
+	"github.com/jenslaufer/launch-kit/iam"
+	"github.com/jenslaufer/launch-kit/marketing"
 )
 
 // --- Type aliases for simple response types ---

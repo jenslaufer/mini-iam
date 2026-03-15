@@ -8,8 +8,8 @@ import (
 	"os"
 	"strconv"
 
-	"github.com/jenslaufer/mini-iam/iam"
-	"github.com/jenslaufer/mini-iam/marketing"
+	"github.com/jenslaufer/launch-kit/iam"
+	"github.com/jenslaufer/launch-kit/marketing"
 	_ "modernc.org/sqlite"
 )
 
@@ -20,7 +20,7 @@ func main() {
 	adminEmail := os.Getenv("ADMIN_EMAIL")
 	adminPassword := os.Getenv("ADMIN_PASSWORD")
 
-	db, err := openDB(envOr("DATABASE_PATH", "mini-iam.db"))
+	db, err := openDB(envOr("DATABASE_PATH", "launch-kit.db"))
 	if err != nil {
 		log.Fatalf("Failed to initialize database: %v", err)
 	}
@@ -42,7 +42,7 @@ func main() {
 	smtpUser := os.Getenv("SMTP_USER")
 	smtpPassword := os.Getenv("SMTP_PASSWORD")
 	smtpFrom := os.Getenv("SMTP_FROM")
-	smtpFromName := envOr("SMTP_FROM_NAME", "mini-iam")
+	smtpFromName := envOr("SMTP_FROM_NAME", "launch-kit")
 	smtpRateMS, _ := strconv.Atoi(envOr("SMTP_RATE_MS", "100"))
 
 	rsaKey, err := iamStore.LoadOrCreateRSAKey()
@@ -109,7 +109,7 @@ func main() {
 
 	handler := CORSMiddleware(corsOrigins)(mux)
 
-	log.Printf("mini-iam starting on :%s (issuer: %s)", port, issuer)
+	log.Printf("launch-kit starting on :%s (issuer: %s)", port, issuer)
 	if err := http.ListenAndServe(":"+port, handler); err != nil {
 		log.Fatalf("Server failed: %v", err)
 	}

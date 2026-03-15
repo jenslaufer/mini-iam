@@ -47,7 +47,7 @@ function isActive(path) {
     <!-- Brand -->
     <div class="flex items-center gap-2 px-5 py-5 shrink-0">
       <div class="w-6 h-6 bg-blue-600 rounded-sm shrink-0"></div>
-      <span class="text-white font-semibold text-base tracking-tight">mini-iam</span>
+      <span class="text-white font-semibold text-base tracking-tight">launch-kit</span>
     </div>
 
     <!-- Nav -->

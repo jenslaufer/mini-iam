@@ -1,7 +1,7 @@
 // @ts-check
 import { expect } from '@playwright/test'
 
-const ADMIN_EMAIL = 'admin@mini-iam.local'
+const ADMIN_EMAIL = 'admin@launch-kit.local'
 const ADMIN_PASSWORD = 'changeme'
 
 /**

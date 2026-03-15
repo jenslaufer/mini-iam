@@ -6,7 +6,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/jenslaufer/mini-iam/iam"
+	"github.com/jenslaufer/launch-kit/iam"
 )
 
 type Handler struct {

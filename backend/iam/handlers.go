@@ -132,7 +132,7 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) AuthorizeGET(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	html := fmt.Sprintf(`<!DOCTYPE html>
-<html><head><title>Login - mini-iam</title>
+<html><head><title>Login - launch-kit</title>
 <style>
 body{font-family:system-ui,sans-serif;display:flex;justify-content:center;align-items:center;min-height:100vh;margin:0;background:#f5f5f5}
 form{background:#fff;padding:2rem;border-radius:8px;box-shadow:0 2px 8px rgba(0,0,0,0.1);width:320px}
@@ -702,14 +702,14 @@ func (h *Handler) Activate(w http.ResponseWriter, r *http.Request) {
 		if err != nil || activated {
 			w.Header().Set("Content-Type", "text/html")
 			w.WriteHeader(http.StatusNotFound)
-			w.Write([]byte(`<!DOCTYPE html><html><head><title>mini-iam</title>
+			w.Write([]byte(`<!DOCTYPE html><html><head><title>launch-kit</title>
 <style>body{font-family:system-ui,sans-serif;display:flex;justify-content:center;align-items:center;min-height:100vh;margin:0;background:#f5f5f5}form{background:#fff;padding:2rem;border-radius:8px;box-shadow:0 2px 8px rgba(0,0,0,0.1);width:320px;text-align:center}h2{margin-top:0}</style>
 </head><body><form><h2>Invalid or expired invite link.</h2></form></body></html>`))
 			return
 		}
 		w.Header().Set("Content-Type", "text/html")
 		fmt.Fprintf(w, `<!DOCTYPE html>
-<html><head><title>Activate Account - mini-iam</title>
+<html><head><title>Activate Account - launch-kit</title>
 <style>
 body{font-family:system-ui,sans-serif;display:flex;justify-content:center;align-items:center;min-height:100vh;margin:0;background:#f5f5f5}
 form{background:#fff;padding:2rem;border-radius:8px;box-shadow:0 2px 8px rgba(0,0,0,0.1);width:320px}
@@ -750,7 +750,7 @@ button:hover{background:#1d4ed8}
 			if password != confirm {
 				w.Header().Set("Content-Type", "text/html")
 				w.WriteHeader(http.StatusBadRequest)
-				w.Write([]byte(`<!DOCTYPE html><html><head><title>mini-iam</title>
+				w.Write([]byte(`<!DOCTYPE html><html><head><title>launch-kit</title>
 <style>body{font-family:system-ui,sans-serif;display:flex;justify-content:center;align-items:center;min-height:100vh;margin:0;background:#f5f5f5}div{background:#fff;padding:2rem;border-radius:8px;box-shadow:0 2px 8px rgba(0,0,0,0.1);width:320px;text-align:center}</style>
 </head><body><div><h2>Passwords do not match</h2><p><a href="javascript:history.back()">Try again</a></p></div></body></html>`))
 				return
@@ -763,7 +763,7 @@ button:hover{background:#1d4ed8}
 			} else {
 				w.Header().Set("Content-Type", "text/html")
 				w.WriteHeader(http.StatusBadRequest)
-				w.Write([]byte(`<!DOCTYPE html><html><head><title>mini-iam</title>
+				w.Write([]byte(`<!DOCTYPE html><html><head><title>launch-kit</title>
 <style>body{font-family:system-ui,sans-serif;display:flex;justify-content:center;align-items:center;min-height:100vh;margin:0;background:#f5f5f5}div{background:#fff;padding:2rem;border-radius:8px;box-shadow:0 2px 8px rgba(0,0,0,0.1);width:320px;text-align:center}</style>
 </head><body><div><h2>Password too short</h2><p>Password must be at least 8 characters.</p><p><a href="javascript:history.back()">Try again</a></p></div></body></html>`))
 			}
@@ -777,7 +777,7 @@ button:hover{background:#1d4ed8}
 			} else {
 				w.Header().Set("Content-Type", "text/html")
 				w.WriteHeader(http.StatusNotFound)
-				w.Write([]byte(`<!DOCTYPE html><html><head><title>mini-iam</title>
+				w.Write([]byte(`<!DOCTYPE html><html><head><title>launch-kit</title>
 <style>body{font-family:system-ui,sans-serif;display:flex;justify-content:center;align-items:center;min-height:100vh;margin:0;background:#f5f5f5}div{background:#fff;padding:2rem;border-radius:8px;box-shadow:0 2px 8px rgba(0,0,0,0.1);width:320px;text-align:center}</style>
 </head><body><div><h2>Invalid or expired invite link.</h2></div></body></html>`))
 			}
@@ -789,7 +789,7 @@ button:hover{background:#1d4ed8}
 		} else {
 			w.Header().Set("Content-Type", "text/html")
 			w.Write([]byte(`<!DOCTYPE html>
-<html><head><title>Account Activated - mini-iam</title>
+<html><head><title>Account Activated - launch-kit</title>
 <style>body{font-family:system-ui,sans-serif;display:flex;justify-content:center;align-items:center;min-height:100vh;margin:0;background:#f5f5f5}div{background:#fff;padding:2rem;border-radius:8px;box-shadow:0 2px 8px rgba(0,0,0,0.1);width:320px;text-align:center}</style>
 </head><body><div>
 <h2>Account Activated</h2>

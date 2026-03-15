@@ -16,7 +16,7 @@ Auth and email marketing for startups. One Go binary, one Vue admin UI.
 docker compose up
 ```
 
-Open http://localhost:3000. Login: `admin@mini-iam.local` / `changeme`.
+Open http://localhost:3000. Login: `admin@launch-kit.local` / `changeme`.
 
 ## Configuration
 

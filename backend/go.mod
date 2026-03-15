@@ -1,4 +1,4 @@
-module github.com/jenslaufer/mini-iam
+module github.com/jenslaufer/launch-kit
 
 go 1.23
 

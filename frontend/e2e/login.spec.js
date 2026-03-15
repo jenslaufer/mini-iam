@@ -8,7 +8,7 @@ test.describe('Login page', () => {
   test('shows login page at /login', async ({ page }) => {
     await page.goto('/login')
     await expect(page).toHaveURL('/login')
-    await expect(page.getByRole('heading', { name: 'mini-iam' })).toBeVisible()
+    await expect(page.getByRole('heading', { name: 'launch-kit' })).toBeVisible()
     await expect(page.getByPlaceholder('admin@example.com')).toBeVisible()
     await expect(page.getByPlaceholder('••••••••')).toBeVisible()
     await expect(page.getByRole('button', { name: 'Sign in' })).toBeVisible()
@@ -31,7 +31,7 @@ test.describe('Login page', () => {
 
   test('shows error on wrong credentials', async ({ page }) => {
     await page.goto('/login')
-    await page.getByPlaceholder('admin@example.com').fill('admin@mini-iam.local')
+    await page.getByPlaceholder('admin@example.com').fill('admin@launch-kit.local')
     await page.getByPlaceholder('••••••••').fill('wrongpassword')
     await page.getByRole('button', { name: 'Sign in' }).click()
     await expect(page.locator('.bg-red-50')).toBeVisible()
@@ -54,7 +54,7 @@ test.describe('Login page', () => {
 
   test('successful admin login redirects to dashboard', async ({ page }) => {
     await page.goto('/login')
-    await page.getByPlaceholder('admin@example.com').fill('admin@mini-iam.local')
+    await page.getByPlaceholder('admin@example.com').fill('admin@launch-kit.local')
     await page.getByPlaceholder('••••••••').fill('changeme')
     await page.getByRole('button', { name: 'Sign in' }).click()
     await expect(page).toHaveURL('/dashboard')
@@ -64,7 +64,7 @@ test.describe('Login page', () => {
   test('logout returns to login page', async ({ page }) => {
     // Log in first
     await page.goto('/login')
-    await page.getByPlaceholder('admin@example.com').fill('admin@mini-iam.local')
+    await page.getByPlaceholder('admin@example.com').fill('admin@launch-kit.local')
     await page.getByPlaceholder('••••••••').fill('changeme')
     await page.getByRole('button', { name: 'Sign in' }).click()
     await expect(page).toHaveURL('/dashboard')

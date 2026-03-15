@@ -36,7 +36,7 @@ async function submit() {
       <!-- Brand -->
       <div class="flex flex-col items-center mb-8">
         <div class="w-10 h-10 bg-blue-600 rounded-lg mb-3"></div>
-        <h1 class="text-xl font-bold text-slate-900 tracking-tight">mini-iam</h1>
+        <h1 class="text-xl font-bold text-slate-900 tracking-tight">launch-kit</h1>
         <p class="text-sm text-slate-500 mt-1">Identity &amp; Access Management</p>
       </div>
 

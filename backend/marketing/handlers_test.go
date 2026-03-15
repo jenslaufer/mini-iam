@@ -11,7 +11,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jenslaufer/mini-iam/iam"
+	"github.com/jenslaufer/launch-kit/iam"
 	_ "modernc.org/sqlite"
 )
 

@@ -13,7 +13,7 @@ test.describe('Users page', () => {
   })
 
   test('lists users including admin', async ({ page }) => {
-    await expect(page.getByText('admin@mini-iam.local')).toBeVisible()
+    await expect(page.getByText('admin@launch-kit.local')).toBeVisible()
   })
 
   test('search filters users', async ({ page }) => {
@@ -27,11 +27,11 @@ test.describe('Users page', () => {
     // Search matches the new user
     await page.getByPlaceholder('Search users...').fill('searchable')
     await expect(page.getByText(email)).toBeVisible()
-    await expect(page.getByText('admin@mini-iam.local')).not.toBeVisible()
+    await expect(page.getByText('admin@launch-kit.local')).not.toBeVisible()
 
     // Clear search shows all users again
     await page.getByPlaceholder('Search users...').fill('')
-    await expect(page.getByText('admin@mini-iam.local')).toBeVisible()
+    await expect(page.getByText('admin@launch-kit.local')).toBeVisible()
 
     // Cleanup
     const token = await getAdminToken(BASE_URL)
