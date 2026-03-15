@@ -92,7 +92,8 @@ func main() {
 	mux.HandleFunc("/admin/campaigns", h.AdminCampaigns)
 	mux.HandleFunc("/admin/campaigns/", h.AdminCampaignByID)
 
-	// Public tracking/unsubscribe endpoints (no auth)
+	// Public endpoints (no auth)
+	mux.HandleFunc("/activate/", h.Activate)
 	mux.HandleFunc("/track/", h.TrackOpen)
 	mux.HandleFunc("/unsubscribe/", h.Unsubscribe)
 

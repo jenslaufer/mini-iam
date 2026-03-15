@@ -96,6 +96,7 @@ func (s *Store) migrate() error {
 		user_id TEXT REFERENCES users(id),
 		unsubscribed INTEGER NOT NULL DEFAULT 0,
 		unsubscribe_token TEXT UNIQUE NOT NULL,
+		invite_token TEXT UNIQUE,
 		consent_source TEXT NOT NULL,
 		consent_at DATETIME NOT NULL,
 		created_at DATETIME NOT NULL
@@ -149,6 +150,9 @@ func (s *Store) migrate() error {
 
 	// Add role column if missing (existing databases)
 	s.db.Exec("ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'user'")
+
+	// Add invite_token column if missing (existing databases)
+	s.db.Exec("ALTER TABLE contacts ADD COLUMN invite_token TEXT UNIQUE")
 
 	return nil
 }

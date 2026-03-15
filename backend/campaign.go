@@ -560,7 +560,23 @@ func (h *Handler) AdminContacts(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, "server_error", "failed to create contact")
 			return
 		}
-		writeJSON(w, http.StatusCreated, contact)
+		// Return invite_token in the creation response so the caller can build an
+		// activation link.  The field is suppressed (json:"-") on the Contact type
+		// itself to keep it out of list/detail responses.
+		var inviteToken string
+		if contact.InviteToken != nil {
+			inviteToken = *contact.InviteToken
+		}
+		writeJSON(w, http.StatusCreated, map[string]any{
+			"id":             contact.ID,
+			"email":          contact.Email,
+			"name":           contact.Name,
+			"unsubscribed":   contact.Unsubscribed,
+			"invite_token":   inviteToken,
+			"consent_source": contact.ConsentSource,
+			"consent_at":     contact.ConsentAt,
+			"created_at":     contact.CreatedAt,
+		})
 
 	default:
 		writeError(w, http.StatusMethodNotAllowed, "invalid_request", "method not allowed")

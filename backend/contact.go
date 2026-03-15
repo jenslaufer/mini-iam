@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"golang.org/x/crypto/bcrypt"
 )
 
 // --- Models ---
@@ -17,6 +18,7 @@ type Contact struct {
 	UserID           *string   `json:"user_id,omitempty"`
 	Unsubscribed     bool      `json:"unsubscribed"`
 	UnsubscribeToken string    `json:"-"`
+	InviteToken      *string   `json:"-"`
 	ConsentSource    string    `json:"consent_source"`
 	ConsentAt        time.Time `json:"consent_at"`
 	CreatedAt        time.Time `json:"created_at"`
@@ -32,20 +34,22 @@ type ContactImport struct {
 // --- Store methods ---
 
 func (s *Store) CreateContact(email, name, consentSource string) (*Contact, error) {
+	inviteToken := uuid.NewString()
 	c := &Contact{
 		ID:               uuid.NewString(),
 		Email:            email,
 		Name:             name,
 		UnsubscribeToken: uuid.NewString(),
+		InviteToken:      &inviteToken,
 		ConsentSource:    consentSource,
 		ConsentAt:        time.Now().UTC(),
 		CreatedAt:        time.Now().UTC(),
 	}
 
 	_, err := s.db.Exec(
-		`INSERT INTO contacts (id, email, name, unsubscribe_token, consent_source, consent_at, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		c.ID, c.Email, c.Name, c.UnsubscribeToken, c.ConsentSource, c.ConsentAt, c.CreatedAt,
+		`INSERT INTO contacts (id, email, name, unsubscribe_token, invite_token, consent_source, consent_at, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		c.ID, c.Email, c.Name, c.UnsubscribeToken, c.InviteToken, c.ConsentSource, c.ConsentAt, c.CreatedAt,
 	)
 	if err != nil {
 		return nil, err
@@ -55,36 +59,42 @@ func (s *Store) CreateContact(email, name, consentSource string) (*Contact, erro
 
 func (s *Store) GetContactByID(id string) (*Contact, error) {
 	c := &Contact{}
-	var userID sql.NullString
+	var userID, inviteToken sql.NullString
 	var unsub int
 	err := s.db.QueryRow(
-		`SELECT id, email, name, user_id, unsubscribed, unsubscribe_token, consent_source, consent_at, created_at
+		`SELECT id, email, name, user_id, unsubscribed, unsubscribe_token, invite_token, consent_source, consent_at, created_at
 		 FROM contacts WHERE id = ?`, id,
-	).Scan(&c.ID, &c.Email, &c.Name, &userID, &unsub, &c.UnsubscribeToken, &c.ConsentSource, &c.ConsentAt, &c.CreatedAt)
+	).Scan(&c.ID, &c.Email, &c.Name, &userID, &unsub, &c.UnsubscribeToken, &inviteToken, &c.ConsentSource, &c.ConsentAt, &c.CreatedAt)
 	if err != nil {
 		return nil, err
 	}
 	c.Unsubscribed = unsub != 0
 	if userID.Valid {
 		c.UserID = &userID.String
+	}
+	if inviteToken.Valid {
+		c.InviteToken = &inviteToken.String
 	}
 	return c, nil
 }
 
 func (s *Store) GetContactByEmail(email string) (*Contact, error) {
 	c := &Contact{}
-	var userID sql.NullString
+	var userID, inviteToken sql.NullString
 	var unsub int
 	err := s.db.QueryRow(
-		`SELECT id, email, name, user_id, unsubscribed, unsubscribe_token, consent_source, consent_at, created_at
+		`SELECT id, email, name, user_id, unsubscribed, unsubscribe_token, invite_token, consent_source, consent_at, created_at
 		 FROM contacts WHERE email = ?`, email,
-	).Scan(&c.ID, &c.Email, &c.Name, &userID, &unsub, &c.UnsubscribeToken, &c.ConsentSource, &c.ConsentAt, &c.CreatedAt)
+	).Scan(&c.ID, &c.Email, &c.Name, &userID, &unsub, &c.UnsubscribeToken, &inviteToken, &c.ConsentSource, &c.ConsentAt, &c.CreatedAt)
 	if err != nil {
 		return nil, err
 	}
 	c.Unsubscribed = unsub != 0
 	if userID.Valid {
 		c.UserID = &userID.String
+	}
+	if inviteToken.Valid {
+		c.InviteToken = &inviteToken.String
 	}
 	return c, nil
 }
@@ -148,8 +158,8 @@ func (s *Store) ImportContacts(contacts []ContactImport) (imported int, skipped 
 	defer tx.Rollback()
 
 	stmt, err := tx.Prepare(
-		`INSERT OR IGNORE INTO contacts (id, email, name, unsubscribe_token, consent_source, consent_at, created_at)
-		 VALUES (?, ?, ?, ?, 'import', ?, ?)`,
+		`INSERT OR IGNORE INTO contacts (id, email, name, unsubscribe_token, invite_token, consent_source, consent_at, created_at)
+		 VALUES (?, ?, ?, ?, ?, 'import', ?, ?)`,
 	)
 	if err != nil {
 		return 0, 0, err
@@ -158,7 +168,7 @@ func (s *Store) ImportContacts(contacts []ContactImport) (imported int, skipped 
 
 	now := time.Now().UTC()
 	for _, c := range contacts {
-		result, err := stmt.Exec(uuid.NewString(), c.Email, c.Name, uuid.NewString(), now, now)
+		result, err := stmt.Exec(uuid.NewString(), c.Email, c.Name, uuid.NewString(), uuid.NewString(), now, now)
 		if err != nil {
 			return imported, skipped, err
 		}
@@ -190,12 +200,12 @@ func (s *Store) LinkContactToUser(contactID, userID string) error {
 
 func (s *Store) GetContactByUnsubscribeToken(token string) (*Contact, error) {
 	c := &Contact{}
-	var userID sql.NullString
+	var userID, inviteToken sql.NullString
 	var unsub int
 	err := s.db.QueryRow(
-		`SELECT id, email, name, user_id, unsubscribed, unsubscribe_token, consent_source, consent_at, created_at
+		`SELECT id, email, name, user_id, unsubscribed, unsubscribe_token, invite_token, consent_source, consent_at, created_at
 		 FROM contacts WHERE unsubscribe_token = ?`, token,
-	).Scan(&c.ID, &c.Email, &c.Name, &userID, &unsub, &c.UnsubscribeToken, &c.ConsentSource, &c.ConsentAt, &c.CreatedAt)
+	).Scan(&c.ID, &c.Email, &c.Name, &userID, &unsub, &c.UnsubscribeToken, &inviteToken, &c.ConsentSource, &c.ConsentAt, &c.CreatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -203,7 +213,82 @@ func (s *Store) GetContactByUnsubscribeToken(token string) (*Contact, error) {
 	if userID.Valid {
 		c.UserID = &userID.String
 	}
+	if inviteToken.Valid {
+		c.InviteToken = &inviteToken.String
+	}
 	return c, nil
+}
+
+func (s *Store) GetContactByInviteToken(token string) (*Contact, error) {
+	c := &Contact{}
+	var userID, inviteToken sql.NullString
+	var unsub int
+	err := s.db.QueryRow(
+		`SELECT id, email, name, user_id, unsubscribed, unsubscribe_token, invite_token, consent_source, consent_at, created_at
+		 FROM contacts WHERE invite_token = ?`, token,
+	).Scan(&c.ID, &c.Email, &c.Name, &userID, &unsub, &c.UnsubscribeToken, &inviteToken, &c.ConsentSource, &c.ConsentAt, &c.CreatedAt)
+	if err != nil {
+		return nil, err
+	}
+	c.Unsubscribed = unsub != 0
+	if userID.Valid {
+		c.UserID = &userID.String
+	}
+	if inviteToken.Valid {
+		c.InviteToken = &inviteToken.String
+	}
+	return c, nil
+}
+
+func (s *Store) ActivateContact(inviteToken, password string) (*User, error) {
+	contact, err := s.GetContactByInviteToken(inviteToken)
+	if err != nil {
+		return nil, fmt.Errorf("invalid invite token")
+	}
+	if contact.UserID != nil {
+		return nil, fmt.Errorf("contact already activated")
+	}
+
+	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	if err != nil {
+		return nil, err
+	}
+
+	user := &User{
+		ID:           uuid.NewString(),
+		Email:        contact.Email,
+		PasswordHash: string(hash),
+		Name:         contact.Name,
+		Role:         "user",
+		CreatedAt:    time.Now().UTC(),
+	}
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+
+	_, err = tx.Exec(
+		"INSERT INTO users (id, email, password_hash, name, role, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+		user.ID, user.Email, user.PasswordHash, user.Name, user.Role, user.CreatedAt,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	_, err = tx.Exec(
+		"UPDATE contacts SET user_id = ?, invite_token = NULL WHERE id = ?",
+		user.ID, contact.ID,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return user, nil
 }
 
 // ListContactsWithSegments returns all contacts with their segments populated.

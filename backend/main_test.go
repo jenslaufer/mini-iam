@@ -63,6 +63,7 @@ func SetupServer(store *Store, tokenService *TokenService) http.Handler {
 	mux.HandleFunc("/admin/campaigns/", h.AdminCampaignByID)
 	mux.HandleFunc("/track/", h.TrackOpen)
 	mux.HandleFunc("/unsubscribe/", h.Unsubscribe)
+	mux.HandleFunc("/activate/", h.Activate)
 
 	return CORSMiddleware("*")(mux)
 }
@@ -3906,6 +3907,322 @@ func TestContactSegmentRelationship(t *testing.T) {
 		segs, _ := contact["segments"].([]any)
 		if len(segs) != 2 {
 			t.Errorf("expected 2 segments on contact detail, got %d", len(segs))
+		}
+	})
+}
+
+// ---------------------------------------------------------------------------
+// CapturingMailer — records every Send call for inspection in tests.
+// ---------------------------------------------------------------------------
+
+type capturedMail struct {
+	To      string
+	Subject string
+	Body    string
+}
+
+type CapturingMailer struct {
+	mails []capturedMail
+}
+
+func (m *CapturingMailer) Send(to, subject, htmlBody string, _ map[string]string) error {
+	m.mails = append(m.mails, capturedMail{To: to, Subject: subject, Body: htmlBody})
+	return nil
+}
+
+// newTestEnvWithMailer is like newTestEnv but injects a custom Mailer so tests
+// can inspect outgoing emails.
+func newTestEnvWithMailer(t *testing.T, mailer Mailer) *testEnv {
+	t.Helper()
+	store, err := NewStore(":memory:")
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	tokenService := NewTokenService(key, "http://test-issuer")
+
+	const issuer = "http://test-issuer"
+	h := NewHandler(store, tokenService, issuer)
+
+	sender := NewCampaignSender(store, mailer, issuer, 0)
+	sender.StartSync()
+	h.sender = sender
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/health", h.Health)
+	mux.HandleFunc("/register", h.Register)
+	mux.HandleFunc("/login", h.Login)
+	mux.HandleFunc("/authorize", h.Authorize)
+	mux.HandleFunc("/token", h.Token)
+	mux.HandleFunc("/userinfo", h.UserInfo)
+	mux.HandleFunc("/jwks", h.JWKS)
+	mux.HandleFunc("/.well-known/openid-configuration", h.Discovery)
+	mux.HandleFunc("/revoke", h.Revoke)
+	mux.HandleFunc("/clients", h.CreateClient)
+	mux.HandleFunc("/admin/users", h.AdminListUsers)
+	mux.HandleFunc("/admin/users/", h.AdminUserByID)
+	mux.HandleFunc("/admin/clients", h.AdminListClients)
+	mux.HandleFunc("/admin/clients/", h.AdminDeleteClient)
+	mux.HandleFunc("/admin/contacts", h.AdminContacts)
+	mux.HandleFunc("/admin/contacts/import", h.AdminImportContacts)
+	mux.HandleFunc("/admin/contacts/", h.AdminContactByID)
+	mux.HandleFunc("/admin/segments", h.AdminSegments)
+	mux.HandleFunc("/admin/segments/", h.AdminSegmentByID)
+	mux.HandleFunc("/admin/campaigns", h.AdminCampaigns)
+	mux.HandleFunc("/admin/campaigns/", h.AdminCampaignByID)
+	mux.HandleFunc("/track/", h.TrackOpen)
+	mux.HandleFunc("/unsubscribe/", h.Unsubscribe)
+	mux.HandleFunc("/activate/", h.Activate)
+
+	srv := httptest.NewServer(CORSMiddleware("*")(mux))
+	t.Cleanup(func() {
+		srv.Close()
+		store.Close()
+	})
+	return &testEnv{srv: srv, store: store}
+}
+
+// ---------------------------------------------------------------------------
+// TestInviteActivationFlow
+// ---------------------------------------------------------------------------
+
+func TestInviteActivationFlow(t *testing.T) {
+	// Shared state across subtests — all subtests run sequentially inside this
+	// parent test, sharing a single env so later subtests can reuse earlier
+	// state (token, contact ID, invite token, etc.).
+	env := newTestEnv(t)
+	token := loginAsAdmin(t, env)
+
+	var contactID string
+	var inviteToken string
+
+	t.Run("create_contact_returns_invite_token", func(t *testing.T) {
+		resp := doRequest(t, env.srv, "POST", "/admin/contacts", token,
+			`{"email":"invited@example.com","name":"Invited User"}`)
+		assertStatus(t, resp, http.StatusCreated)
+
+		var c map[string]any
+		decodeJSON(t, resp, &c)
+
+		contactID, _ = c["id"].(string)
+		if contactID == "" {
+			t.Fatal("expected non-empty id in response")
+		}
+
+		inviteToken, _ = c["invite_token"].(string)
+		if inviteToken == "" {
+			t.Fatal("expected non-empty invite_token in response")
+		}
+		// invite_token must look like a UUID (contains hyphens, 36 chars).
+		if len(inviteToken) != 36 {
+			t.Errorf("invite_token looks wrong: %q", inviteToken)
+		}
+	})
+
+	t.Run("GET_activate_with_valid_token_returns_HTML", func(t *testing.T) {
+		if inviteToken == "" {
+			t.Skip("no invite token from previous subtest")
+		}
+		resp := doGet(t, env.srv, "/activate/"+inviteToken, nil)
+		assertStatus(t, resp, http.StatusOK)
+
+		body := readBody(resp)
+		if !strings.Contains(body, "<form") {
+			t.Errorf("expected HTML form in response, got: %.200s", body)
+		}
+		ct := resp.Header.Get("Content-Type")
+		if !strings.Contains(ct, "text/html") {
+			t.Errorf("expected Content-Type text/html, got %q", ct)
+		}
+	})
+
+	t.Run("GET_activate_with_invalid_token_returns_404", func(t *testing.T) {
+		resp := doGet(t, env.srv, "/activate/00000000-0000-0000-0000-000000000000", nil)
+		if resp.StatusCode != http.StatusNotFound {
+			body := readBody(resp)
+			t.Fatalf("expected 404, got %d (body=%q)", resp.StatusCode, body)
+		}
+		resp.Body.Close()
+	})
+
+	t.Run("POST_activate_creates_user_and_links_contact", func(t *testing.T) {
+		if inviteToken == "" {
+			t.Skip("no invite token from previous subtest")
+		}
+		resp := doRequest(t, env.srv, "POST", "/activate/"+inviteToken, "",
+			`{"password":"securePass1"}`)
+		assertStatus(t, resp, http.StatusOK)
+
+		var body map[string]any
+		decodeJSON(t, resp, &body)
+
+		if body["status"] != "activated" {
+			t.Errorf("status: got %v, want activated", body["status"])
+		}
+		if body["user_id"] == nil || body["user_id"] == "" {
+			t.Error("expected non-empty user_id in activation response")
+		}
+
+		// Confirm login works with the new credentials.
+		loginResp := doJSON(t, env.srv, "/login", map[string]any{
+			"email":    "invited@example.com",
+			"password": "securePass1",
+		})
+		assertStatus(t, loginResp, http.StatusOK)
+		var tr TokenResponse
+		decodeJSON(t, loginResp, &tr)
+		if tr.AccessToken == "" {
+			t.Error("expected non-empty access_token after activation login")
+		}
+	})
+
+	t.Run("activated_user_can_access_userinfo", func(t *testing.T) {
+		if inviteToken == "" {
+			t.Skip("no invite token from previous subtest")
+		}
+		// Log in as the activated user and call /userinfo.
+		loginResp := doJSON(t, env.srv, "/login", map[string]any{
+			"email":    "invited@example.com",
+			"password": "securePass1",
+		})
+		assertStatus(t, loginResp, http.StatusOK)
+		var tr TokenResponse
+		decodeJSON(t, loginResp, &tr)
+
+		uiResp := doGet(t, env.srv, "/userinfo", map[string]string{
+			"Authorization": "Bearer " + tr.AccessToken,
+		})
+		assertStatus(t, uiResp, http.StatusOK)
+		var ui UserInfoResponse
+		decodeJSON(t, uiResp, &ui)
+
+		if ui.Email != "invited@example.com" {
+			t.Errorf("userinfo email: got %q, want invited@example.com", ui.Email)
+		}
+	})
+
+	t.Run("POST_activate_with_used_token_returns_404", func(t *testing.T) {
+		if inviteToken == "" {
+			t.Skip("no invite token from previous subtest")
+		}
+		// Token was consumed by the activation above.
+		resp := doRequest(t, env.srv, "POST", "/activate/"+inviteToken, "",
+			`{"password":"anotherPass1"}`)
+		if resp.StatusCode != http.StatusNotFound {
+			body := readBody(resp)
+			t.Fatalf("expected 404 for used token, got %d (body=%q)", resp.StatusCode, body)
+		}
+		resp.Body.Close()
+	})
+
+	t.Run("POST_activate_with_short_password_returns_400", func(t *testing.T) {
+		// Create a fresh contact with its own invite token.
+		resp := doRequest(t, env.srv, "POST", "/admin/contacts", token,
+			`{"email":"shortpw@example.com","name":"Short PW"}`)
+		assertStatus(t, resp, http.StatusCreated)
+		var c map[string]any
+		decodeJSON(t, resp, &c)
+		shortToken, _ := c["invite_token"].(string)
+		if shortToken == "" {
+			t.Fatal("no invite token for short-password test contact")
+		}
+
+		resp2 := doRequest(t, env.srv, "POST", "/activate/"+shortToken, "",
+			`{"password":"abc"}`)
+		if resp2.StatusCode != http.StatusBadRequest {
+			body := readBody(resp2)
+			t.Fatalf("expected 400 for short password, got %d (body=%q)", resp2.StatusCode, body)
+		}
+		resp2.Body.Close()
+	})
+
+	t.Run("contact_user_id_linked_after_activation", func(t *testing.T) {
+		if contactID == "" {
+			t.Skip("no contact id from previous subtest")
+		}
+		// GET /admin/contacts/{id} and verify user_id is set.
+		resp := doRequest(t, env.srv, "GET", "/admin/contacts/"+contactID, token, "")
+		assertStatus(t, resp, http.StatusOK)
+
+		var c map[string]any
+		decodeJSON(t, resp, &c)
+
+		userID, _ := c["user_id"].(string)
+		if userID == "" {
+			t.Error("expected user_id to be set on contact after activation")
+		}
+	})
+
+	t.Run("invite_url_template_variable_in_campaign", func(t *testing.T) {
+		// Use a CapturingMailer so we can inspect the rendered email body.
+		capMailer := &CapturingMailer{}
+		capEnv := newTestEnvWithMailer(t, capMailer)
+		capToken := loginAsAdmin(t, capEnv)
+
+		// Create contact (gets invite token).
+		contactResp := doRequest(t, capEnv.srv, "POST", "/admin/contacts", capToken,
+			`{"email":"campaign-invite@example.com","name":"Campaign Invite"}`)
+		assertStatus(t, contactResp, http.StatusCreated)
+		var cc map[string]any
+		decodeJSON(t, contactResp, &cc)
+		campInviteToken, _ := cc["invite_token"].(string)
+		if campInviteToken == "" {
+			t.Fatal("no invite_token on created contact")
+		}
+		campContactID, _ := cc["id"].(string)
+
+		// Create segment and add contact.
+		seg := createSegment(t, capEnv, capToken, "InviteSeg", "")
+		segID, _ := seg["id"].(string)
+		addContactToSegment(t, capEnv, capToken, segID, campContactID)
+
+		// Create campaign with {{.InviteURL}} in the body.
+		segsJSON, _ := json.Marshal([]string{segID})
+		campBody := fmt.Sprintf(
+			`{"subject":"Your Invite","html_body":"<p>Click here: {{.InviteURL}}</p>","from_name":"Test","from_email":"test@example.com","segment_ids":%s}`,
+			segsJSON,
+		)
+		campResp := doRequest(t, capEnv.srv, "POST", "/admin/campaigns", capToken, campBody)
+		assertStatus(t, campResp, http.StatusCreated)
+		var camp map[string]any
+		decodeJSON(t, campResp, &camp)
+		campID, _ := camp["id"].(string)
+
+		// Send campaign (synchronous in test mode).
+		sendResp := doRequest(t, capEnv.srv, "POST", "/admin/campaigns/"+campID+"/send", capToken, "")
+		assertStatus(t, sendResp, http.StatusAccepted)
+		sendResp.Body.Close()
+
+		// Verify the captured email contains the /activate/ URL.
+		if len(capMailer.mails) == 0 {
+			t.Fatal("no emails captured — expected campaign to send at least one email")
+		}
+		found := false
+		for _, m := range capMailer.mails {
+			if strings.Contains(m.Body, "/activate/"+campInviteToken) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			bodies := make([]string, len(capMailer.mails))
+			for i, m := range capMailer.mails {
+				bodies[i] = m.Body
+			}
+			t.Errorf("expected /activate/%s in email body, got bodies: %v", campInviteToken, bodies)
+		}
+
+		// Also verify the campaign recipients show the contact as sent.
+		statsResp := doRequest(t, capEnv.srv, "GET", "/admin/campaigns/"+campID+"/stats", capToken, "")
+		assertStatus(t, statsResp, http.StatusOK)
+		var stats map[string]any
+		decodeJSON(t, statsResp, &stats)
+		sent, _ := stats["sent"].(float64)
+		if int(sent) != 1 {
+			t.Errorf("expected 1 sent recipient, got %v", stats["sent"])
 		}
 	})
 }

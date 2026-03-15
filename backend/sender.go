@@ -140,12 +140,14 @@ func (cs *CampaignSender) processCampaign(campaignID string) {
 		// Template substitution
 		unsubscribeURL := fmt.Sprintf("%s/unsubscribe/%s", cs.issuer, cs.getUnsubscribeToken(r.ContactID))
 		trackingURL := fmt.Sprintf("%s/track/%s", cs.issuer, r.ID)
+		inviteURL := fmt.Sprintf("%s/activate/%s", cs.issuer, cs.getInviteToken(r.ContactID))
 
 		body := campaign.HTMLBody
 		body = strings.ReplaceAll(body, "{{.Name}}", r.ContactName)
 		body = strings.ReplaceAll(body, "{{.Email}}", r.ContactEmail)
 		body = strings.ReplaceAll(body, "{{.UnsubscribeURL}}", unsubscribeURL)
 		body = strings.ReplaceAll(body, "{{.TrackingPixelURL}}", trackingURL)
+		body = strings.ReplaceAll(body, "{{.InviteURL}}", inviteURL)
 
 		// Append tracking pixel
 		body += fmt.Sprintf(`<img src="%s" width="1" height="1" alt="" style="display:none">`, trackingURL)
@@ -190,4 +192,12 @@ func (cs *CampaignSender) getUnsubscribeToken(contactID string) string {
 		return ""
 	}
 	return contact.UnsubscribeToken
+}
+
+func (cs *CampaignSender) getInviteToken(contactID string) string {
+	contact, err := cs.store.GetContactByID(contactID)
+	if err != nil || contact.InviteToken == nil {
+		return ""
+	}
+	return *contact.InviteToken
 }
