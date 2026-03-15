@@ -10,9 +10,10 @@ import (
 )
 
 type Handler struct {
-	store    *Store
-	tokens   *TokenService
-	issuer   string
+	store  *Store
+	tokens *TokenService
+	issuer string
+	sender *CampaignSender
 }
 
 func NewHandler(store *Store, tokens *TokenService, issuer string) *Handler {

@@ -31,6 +31,12 @@ func SetupServer(store *Store, tokenService *TokenService) http.Handler {
 	const issuer = "http://test-issuer"
 	h := NewHandler(store, tokenService, issuer)
 
+	// Wire a synchronous sender for tests: Enqueue processes campaigns inline,
+	// eliminating goroutine races and making waitForCampaignStatus unnecessary.
+	sender := NewCampaignSender(store, &LogMailer{}, issuer, 0)
+	sender.StartSync()
+	h.sender = sender
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", h.Health)
 	mux.HandleFunc("/register", h.Register)
@@ -46,6 +52,17 @@ func SetupServer(store *Store, tokenService *TokenService) http.Handler {
 	mux.HandleFunc("/admin/users/", h.AdminUserByID)
 	mux.HandleFunc("/admin/clients", h.AdminListClients)
 	mux.HandleFunc("/admin/clients/", h.AdminDeleteClient)
+
+	// Marketing routes
+	mux.HandleFunc("/admin/contacts", h.AdminContacts)
+	mux.HandleFunc("/admin/contacts/import", h.AdminImportContacts)
+	mux.HandleFunc("/admin/contacts/", h.AdminContactByID)
+	mux.HandleFunc("/admin/segments", h.AdminSegments)
+	mux.HandleFunc("/admin/segments/", h.AdminSegmentByID)
+	mux.HandleFunc("/admin/campaigns", h.AdminCampaigns)
+	mux.HandleFunc("/admin/campaigns/", h.AdminCampaignByID)
+	mux.HandleFunc("/track/", h.TrackOpen)
+	mux.HandleFunc("/unsubscribe/", h.Unsubscribe)
 
 	return CORSMiddleware("*")(mux)
 }
@@ -2569,6 +2586,1326 @@ func TestRoleInTokens(t *testing.T) {
 		role, _ := claims["role"].(string)
 		if role != "admin" {
 			t.Errorf("promoted user token role: got %q, want admin", role)
+		}
+	})
+}
+
+// ---------------------------------------------------------------------------
+// Marketing test helpers
+// ---------------------------------------------------------------------------
+
+// createContact calls POST /admin/contacts and returns the decoded contact map.
+func createContact(t *testing.T, env *testEnv, token, email, name string) map[string]any {
+	t.Helper()
+	resp := doRequest(t, env.srv, "POST", "/admin/contacts", token,
+		fmt.Sprintf(`{"email":%q,"name":%q}`, email, name))
+	assertStatus(t, resp, http.StatusCreated)
+	var c map[string]any
+	decodeJSON(t, resp, &c)
+	return c
+}
+
+// createSegment calls POST /admin/segments and returns the decoded segment map.
+func createSegment(t *testing.T, env *testEnv, token, name, description string) map[string]any {
+	t.Helper()
+	resp := doRequest(t, env.srv, "POST", "/admin/segments", token,
+		fmt.Sprintf(`{"name":%q,"description":%q}`, name, description))
+	assertStatus(t, resp, http.StatusCreated)
+	var s map[string]any
+	decodeJSON(t, resp, &s)
+	return s
+}
+
+// addContactToSegment calls POST /admin/segments/{segID}/contacts.
+func addContactToSegment(t *testing.T, env *testEnv, token, segID, contactID string) {
+	t.Helper()
+	resp := doRequest(t, env.srv, "POST", "/admin/segments/"+segID+"/contacts", token,
+		fmt.Sprintf(`{"contact_id":%q}`, contactID))
+	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent {
+		body := readBody(resp)
+		t.Fatalf("addContactToSegment: expected 2xx, got %d (body=%q)", resp.StatusCode, body)
+	}
+	resp.Body.Close()
+}
+
+// createCampaign calls POST /admin/campaigns and returns the decoded campaign map.
+func createCampaign(t *testing.T, env *testEnv, token string, segmentIDs []string) map[string]any {
+	t.Helper()
+	segsJSON, _ := json.Marshal(segmentIDs)
+	body := fmt.Sprintf(`{"subject":"Test Subject","html_body":"<p>Hello {{.Name}}</p>","from_name":"Sender","from_email":"sender@example.com","segment_ids":%s}`, segsJSON)
+	resp := doRequest(t, env.srv, "POST", "/admin/campaigns", token, body)
+	assertStatus(t, resp, http.StatusCreated)
+	var c map[string]any
+	decodeJSON(t, resp, &c)
+	return c
+}
+
+// waitForCampaignStatus polls GET /admin/campaigns/{id}/stats until the
+// campaign status matches want or the deadline is reached.
+func waitForCampaignStatus(t *testing.T, env *testEnv, token, campaignID, want string, maxWait time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(maxWait)
+	for time.Now().Before(deadline) {
+		resp := doRequest(t, env.srv, "GET", "/admin/campaigns/"+campaignID, token, "")
+		if resp.StatusCode == http.StatusOK {
+			var body map[string]any
+			decodeJSON(t, resp, &body)
+			if camp, ok := body["campaign"].(map[string]any); ok {
+				if camp["status"] == want {
+					return
+				}
+			}
+		} else {
+			resp.Body.Close()
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("campaign %s did not reach status %q within %v", campaignID, want, maxWait)
+}
+
+// ---------------------------------------------------------------------------
+// TestContactManagement
+// ---------------------------------------------------------------------------
+
+func TestContactManagement(t *testing.T) {
+	t.Run("create contact returns 201 with all fields", func(t *testing.T) {
+		env := newTestEnv(t)
+		token := loginAsAdmin(t, env)
+
+		resp := doRequest(t, env.srv, "POST", "/admin/contacts", token,
+			`{"email":"alice@marketing.com","name":"Alice"}`)
+		assertStatus(t, resp, http.StatusCreated)
+
+		var c map[string]any
+		decodeJSON(t, resp, &c)
+
+		if c["id"] == nil || c["id"] == "" {
+			t.Error("expected non-empty id")
+		}
+		if c["email"] != "alice@marketing.com" {
+			t.Errorf("email: got %v", c["email"])
+		}
+		if c["name"] != "Alice" {
+			t.Errorf("name: got %v", c["name"])
+		}
+		if _, ok := c["unsubscribed"]; !ok {
+			t.Error("expected unsubscribed field")
+		}
+		if _, ok := c["consent_source"]; !ok {
+			t.Error("expected consent_source field")
+		}
+		if _, ok := c["created_at"]; !ok {
+			t.Error("expected created_at field")
+		}
+		// unsubscribe_token must not leak through the API
+		if _, ok := c["unsubscribe_token"]; ok {
+			t.Error("unsubscribe_token must not be returned")
+		}
+	})
+
+	t.Run("duplicate email returns 409", func(t *testing.T) {
+		env := newTestEnv(t)
+		token := loginAsAdmin(t, env)
+
+		createContact(t, env, token, "dup@marketing.com", "Dup")
+
+		resp := doRequest(t, env.srv, "POST", "/admin/contacts", token,
+			`{"email":"dup@marketing.com","name":"Dup2"}`)
+		assertStatus(t, resp, http.StatusConflict)
+		resp.Body.Close()
+	})
+
+	t.Run("list contacts returns all contacts", func(t *testing.T) {
+		env := newTestEnv(t)
+		token := loginAsAdmin(t, env)
+
+		createContact(t, env, token, "c1@marketing.com", "C1")
+		createContact(t, env, token, "c2@marketing.com", "C2")
+
+		resp := doRequest(t, env.srv, "GET", "/admin/contacts", token, "")
+		assertStatus(t, resp, http.StatusOK)
+
+		var contacts []map[string]any
+		decodeJSON(t, resp, &contacts)
+
+		if len(contacts) < 2 {
+			t.Errorf("expected at least 2 contacts, got %d", len(contacts))
+		}
+	})
+
+	t.Run("get contact by ID returns contact with segments field", func(t *testing.T) {
+		env := newTestEnv(t)
+		token := loginAsAdmin(t, env)
+
+		c := createContact(t, env, token, "getme@marketing.com", "Get Me")
+		id, _ := c["id"].(string)
+
+		resp := doRequest(t, env.srv, "GET", "/admin/contacts/"+id, token, "")
+		assertStatus(t, resp, http.StatusOK)
+
+		var got map[string]any
+		decodeJSON(t, resp, &got)
+
+		if got["id"] != id {
+			t.Errorf("id: got %v, want %v", got["id"], id)
+		}
+		if got["email"] != "getme@marketing.com" {
+			t.Errorf("email: got %v", got["email"])
+		}
+	})
+
+	t.Run("delete contact returns 204 or 200", func(t *testing.T) {
+		env := newTestEnv(t)
+		token := loginAsAdmin(t, env)
+
+		c := createContact(t, env, token, "delme@marketing.com", "Del Me")
+		id, _ := c["id"].(string)
+
+		resp := doRequest(t, env.srv, "DELETE", "/admin/contacts/"+id, token, "")
+		if resp.StatusCode != http.StatusNoContent && resp.StatusCode != http.StatusOK {
+			body := readBody(resp)
+			t.Fatalf("expected 204 or 200, got %d (body=%q)", resp.StatusCode, body)
+		}
+		resp.Body.Close()
+	})
+
+	t.Run("deleted contact not in list", func(t *testing.T) {
+		env := newTestEnv(t)
+		token := loginAsAdmin(t, env)
+
+		c := createContact(t, env, token, "gone@marketing.com", "Gone")
+		id, _ := c["id"].(string)
+
+		delResp := doRequest(t, env.srv, "DELETE", "/admin/contacts/"+id, token, "")
+		delResp.Body.Close()
+
+		listResp := doRequest(t, env.srv, "GET", "/admin/contacts", token, "")
+		assertStatus(t, listResp, http.StatusOK)
+		var contacts []map[string]any
+		decodeJSON(t, listResp, &contacts)
+
+		for _, ct := range contacts {
+			if ct["id"] == id {
+				t.Errorf("deleted contact %q still appears in list", id)
+			}
+		}
+	})
+
+	t.Run("contact endpoint without auth returns 401", func(t *testing.T) {
+		env := newTestEnv(t)
+
+		resp := doRequest(t, env.srv, "GET", "/admin/contacts", "", "")
+		assertStatus(t, resp, http.StatusUnauthorized)
+		resp.Body.Close()
+	})
+
+	t.Run("contact endpoint with non-admin token returns 403", func(t *testing.T) {
+		env := newTestEnv(t)
+		registerUser(t, env.srv, "regular@test.com", "pass1234", "Regular")
+		tr := loginUser(t, env.srv, "regular@test.com", "pass1234")
+
+		resp := doRequest(t, env.srv, "GET", "/admin/contacts", tr.AccessToken, "")
+		assertStatus(t, resp, http.StatusForbidden)
+		resp.Body.Close()
+	})
+
+	t.Run("get non-existent contact returns 404", func(t *testing.T) {
+		env := newTestEnv(t)
+		token := loginAsAdmin(t, env)
+
+		resp := doRequest(t, env.srv, "GET", "/admin/contacts/no-such-id", token, "")
+		assertStatus(t, resp, http.StatusNotFound)
+		resp.Body.Close()
+	})
+}
+
+// ---------------------------------------------------------------------------
+// TestContactImport
+// ---------------------------------------------------------------------------
+
+func TestContactImport(t *testing.T) {
+	t.Run("import multiple contacts", func(t *testing.T) {
+		env := newTestEnv(t)
+		token := loginAsAdmin(t, env)
+
+		body := `[{"email":"imp1@test.com","name":"Imp One"},{"email":"imp2@test.com","name":"Imp Two"},{"email":"imp3@test.com","name":"Imp Three"}]`
+		resp := doRequest(t, env.srv, "POST", "/admin/contacts/import", token, body)
+		assertStatus(t, resp, http.StatusOK)
+
+		var result map[string]any
+		decodeJSON(t, resp, &result)
+
+		imported, _ := result["imported"].(float64)
+		if int(imported) != 3 {
+			t.Errorf("imported: got %v, want 3", result["imported"])
+		}
+		skipped, _ := result["skipped"].(float64)
+		if int(skipped) != 0 {
+			t.Errorf("skipped: got %v, want 0", result["skipped"])
+		}
+	})
+
+	t.Run("import skips duplicates and returns count", func(t *testing.T) {
+		env := newTestEnv(t)
+		token := loginAsAdmin(t, env)
+
+		body := `[{"email":"skipper@test.com","name":"Skipper"},{"email":"new@test.com","name":"New"}]`
+		resp1 := doRequest(t, env.srv, "POST", "/admin/contacts/import", token, body)
+		assertStatus(t, resp1, http.StatusOK)
+		resp1.Body.Close()
+
+		// Re-import same batch — both should be skipped.
+		resp2 := doRequest(t, env.srv, "POST", "/admin/contacts/import", token, body)
+		assertStatus(t, resp2, http.StatusOK)
+
+		var result map[string]any
+		decodeJSON(t, resp2, &result)
+
+		imported, _ := result["imported"].(float64)
+		skipped, _ := result["skipped"].(float64)
+		if int(imported) != 0 {
+			t.Errorf("imported after re-import: got %v, want 0", result["imported"])
+		}
+		if int(skipped) != 2 {
+			t.Errorf("skipped after re-import: got %v, want 2", result["skipped"])
+		}
+	})
+
+	t.Run("import with existing email skips it", func(t *testing.T) {
+		env := newTestEnv(t)
+		token := loginAsAdmin(t, env)
+
+		// Pre-create a contact via API.
+		createContact(t, env, token, "existing@test.com", "Existing")
+
+		body := `[{"email":"existing@test.com","name":"Existing Again"},{"email":"brand-new@test.com","name":"Brand New"}]`
+		resp := doRequest(t, env.srv, "POST", "/admin/contacts/import", token, body)
+		assertStatus(t, resp, http.StatusOK)
+
+		var result map[string]any
+		decodeJSON(t, resp, &result)
+
+		imported, _ := result["imported"].(float64)
+		skipped, _ := result["skipped"].(float64)
+		if int(imported) != 1 {
+			t.Errorf("imported: got %v, want 1", result["imported"])
+		}
+		if int(skipped) != 1 {
+			t.Errorf("skipped: got %v, want 1", result["skipped"])
+		}
+	})
+
+	t.Run("empty import returns 0/0", func(t *testing.T) {
+		env := newTestEnv(t)
+		token := loginAsAdmin(t, env)
+
+		resp := doRequest(t, env.srv, "POST", "/admin/contacts/import", token, `[]`)
+		assertStatus(t, resp, http.StatusOK)
+
+		var result map[string]any
+		decodeJSON(t, resp, &result)
+
+		imported, _ := result["imported"].(float64)
+		skipped, _ := result["skipped"].(float64)
+		if int(imported) != 0 || int(skipped) != 0 {
+			t.Errorf("empty import: got imported=%v skipped=%v, want 0/0", result["imported"], result["skipped"])
+		}
+	})
+
+	t.Run("import without auth returns 401", func(t *testing.T) {
+		env := newTestEnv(t)
+
+		resp := doRequest(t, env.srv, "POST", "/admin/contacts/import", "",
+			`[{"email":"x@test.com","name":"X"}]`)
+		assertStatus(t, resp, http.StatusUnauthorized)
+		resp.Body.Close()
+	})
+}
+
+// ---------------------------------------------------------------------------
+// TestSegmentManagement
+// ---------------------------------------------------------------------------
+
+func TestSegmentManagement(t *testing.T) {
+	t.Run("create segment returns 201 with all fields", func(t *testing.T) {
+		env := newTestEnv(t)
+		token := loginAsAdmin(t, env)
+
+		resp := doRequest(t, env.srv, "POST", "/admin/segments", token,
+			`{"name":"VIP Customers","description":"High-value customers"}`)
+		assertStatus(t, resp, http.StatusCreated)
+
+		var s map[string]any
+		decodeJSON(t, resp, &s)
+
+		if s["id"] == nil || s["id"] == "" {
+			t.Error("expected non-empty id")
+		}
+		if s["name"] != "VIP Customers" {
+			t.Errorf("name: got %v", s["name"])
+		}
+		if s["description"] != "High-value customers" {
+			t.Errorf("description: got %v", s["description"])
+		}
+		if _, ok := s["created_at"]; !ok {
+			t.Error("expected created_at field")
+		}
+	})
+
+	t.Run("duplicate segment name returns 409", func(t *testing.T) {
+		env := newTestEnv(t)
+		token := loginAsAdmin(t, env)
+
+		createSegment(t, env, token, "UniqueSegment", "")
+
+		resp := doRequest(t, env.srv, "POST", "/admin/segments", token,
+			`{"name":"UniqueSegment"}`)
+		assertStatus(t, resp, http.StatusConflict)
+		resp.Body.Close()
+	})
+
+	t.Run("list segments with contact counts", func(t *testing.T) {
+		env := newTestEnv(t)
+		token := loginAsAdmin(t, env)
+
+		seg := createSegment(t, env, token, "ListSeg", "")
+		segID, _ := seg["id"].(string)
+
+		c1 := createContact(t, env, token, "seg-c1@test.com", "C1")
+		c2 := createContact(t, env, token, "seg-c2@test.com", "C2")
+		addContactToSegment(t, env, token, segID, c1["id"].(string))
+		addContactToSegment(t, env, token, segID, c2["id"].(string))
+
+		resp := doRequest(t, env.srv, "GET", "/admin/segments", token, "")
+		assertStatus(t, resp, http.StatusOK)
+
+		var segments []map[string]any
+		decodeJSON(t, resp, &segments)
+
+		var found map[string]any
+		for _, s := range segments {
+			if s["id"] == segID {
+				found = s
+			}
+		}
+		if found == nil {
+			t.Fatal("created segment not found in list")
+		}
+		count, _ := found["contact_count"].(float64)
+		if int(count) != 2 {
+			t.Errorf("contact_count: got %v, want 2", found["contact_count"])
+		}
+	})
+
+	t.Run("update segment name and description", func(t *testing.T) {
+		env := newTestEnv(t)
+		token := loginAsAdmin(t, env)
+
+		seg := createSegment(t, env, token, "OldName", "Old desc")
+		segID, _ := seg["id"].(string)
+
+		resp := doRequest(t, env.srv, "PUT", "/admin/segments/"+segID, token,
+			`{"name":"NewName","description":"New desc"}`)
+		assertStatus(t, resp, http.StatusOK)
+
+		var updated map[string]any
+		decodeJSON(t, resp, &updated)
+
+		if updated["name"] != "NewName" {
+			t.Errorf("name after update: got %v, want NewName", updated["name"])
+		}
+		if updated["description"] != "New desc" {
+			t.Errorf("description after update: got %v, want New desc", updated["description"])
+		}
+	})
+
+	t.Run("delete segment returns 200 or 204", func(t *testing.T) {
+		env := newTestEnv(t)
+		token := loginAsAdmin(t, env)
+
+		seg := createSegment(t, env, token, "SegToDelete", "")
+		segID, _ := seg["id"].(string)
+
+		resp := doRequest(t, env.srv, "DELETE", "/admin/segments/"+segID, token, "")
+		if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent {
+			body := readBody(resp)
+			t.Fatalf("expected 200 or 204, got %d (body=%q)", resp.StatusCode, body)
+		}
+		resp.Body.Close()
+	})
+
+	t.Run("deleted segment removed from list", func(t *testing.T) {
+		env := newTestEnv(t)
+		token := loginAsAdmin(t, env)
+
+		seg := createSegment(t, env, token, "GoneSeg", "")
+		segID, _ := seg["id"].(string)
+
+		delResp := doRequest(t, env.srv, "DELETE", "/admin/segments/"+segID, token, "")
+		delResp.Body.Close()
+
+		listResp := doRequest(t, env.srv, "GET", "/admin/segments", token, "")
+		assertStatus(t, listResp, http.StatusOK)
+		var segments []map[string]any
+		decodeJSON(t, listResp, &segments)
+
+		for _, s := range segments {
+			if s["id"] == segID {
+				t.Errorf("deleted segment %q still appears in list", segID)
+			}
+		}
+	})
+
+	t.Run("add contact to segment", func(t *testing.T) {
+		env := newTestEnv(t)
+		token := loginAsAdmin(t, env)
+
+		seg := createSegment(t, env, token, "AddContactSeg", "")
+		segID, _ := seg["id"].(string)
+
+		c := createContact(t, env, token, "seg-add@test.com", "Add Me")
+		contactID, _ := c["id"].(string)
+
+		addContactToSegment(t, env, token, segID, contactID)
+
+		// Verify via GET /admin/segments/{id}
+		resp := doRequest(t, env.srv, "GET", "/admin/segments/"+segID, token, "")
+		assertStatus(t, resp, http.StatusOK)
+		var body map[string]any
+		decodeJSON(t, resp, &body)
+
+		contacts, _ := body["contacts"].([]any)
+		found := false
+		for _, ct := range contacts {
+			if m, ok := ct.(map[string]any); ok && m["id"] == contactID {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("contact %q not found in segment contacts", contactID)
+		}
+	})
+
+	t.Run("remove contact from segment", func(t *testing.T) {
+		env := newTestEnv(t)
+		token := loginAsAdmin(t, env)
+
+		seg := createSegment(t, env, token, "RemoveContactSeg", "")
+		segID, _ := seg["id"].(string)
+		c := createContact(t, env, token, "seg-rem@test.com", "Remove Me")
+		contactID, _ := c["id"].(string)
+		addContactToSegment(t, env, token, segID, contactID)
+
+		delResp := doRequest(t, env.srv, "DELETE",
+			"/admin/segments/"+segID+"/contacts/"+contactID, token, "")
+		if delResp.StatusCode != http.StatusOK && delResp.StatusCode != http.StatusNoContent {
+			body := readBody(delResp)
+			t.Fatalf("expected 200 or 204 removing from segment, got %d (body=%q)", delResp.StatusCode, body)
+		}
+		delResp.Body.Close()
+
+		// Confirm removal via segment detail
+		resp := doRequest(t, env.srv, "GET", "/admin/segments/"+segID, token, "")
+		assertStatus(t, resp, http.StatusOK)
+		var body map[string]any
+		decodeJSON(t, resp, &body)
+
+		contacts, _ := body["contacts"].([]any)
+		for _, ct := range contacts {
+			if m, ok := ct.(map[string]any); ok && m["id"] == contactID {
+				t.Errorf("contact %q still listed in segment after removal", contactID)
+			}
+		}
+	})
+
+	t.Run("contact can be in multiple segments", func(t *testing.T) {
+		env := newTestEnv(t)
+		token := loginAsAdmin(t, env)
+
+		seg1 := createSegment(t, env, token, "MultiSeg1", "")
+		seg2 := createSegment(t, env, token, "MultiSeg2", "")
+		c := createContact(t, env, token, "multi@test.com", "Multi")
+		contactID, _ := c["id"].(string)
+
+		addContactToSegment(t, env, token, seg1["id"].(string), contactID)
+		addContactToSegment(t, env, token, seg2["id"].(string), contactID)
+
+		// Both segments should list the contact
+		for _, seg := range []map[string]any{seg1, seg2} {
+			segID, _ := seg["id"].(string)
+			resp := doRequest(t, env.srv, "GET", "/admin/segments/"+segID, token, "")
+			assertStatus(t, resp, http.StatusOK)
+			var body map[string]any
+			decodeJSON(t, resp, &body)
+			contacts, _ := body["contacts"].([]any)
+			found := false
+			for _, ct := range contacts {
+				if m, ok := ct.(map[string]any); ok && m["id"] == contactID {
+					found = true
+				}
+			}
+			if !found {
+				t.Errorf("contact not found in segment %q", segID)
+			}
+		}
+	})
+
+	t.Run("get segment returns contacts", func(t *testing.T) {
+		env := newTestEnv(t)
+		token := loginAsAdmin(t, env)
+
+		seg := createSegment(t, env, token, "GetContactsSeg", "")
+		segID, _ := seg["id"].(string)
+		c1 := createContact(t, env, token, "gcs1@test.com", "GCS1")
+		c2 := createContact(t, env, token, "gcs2@test.com", "GCS2")
+		addContactToSegment(t, env, token, segID, c1["id"].(string))
+		addContactToSegment(t, env, token, segID, c2["id"].(string))
+
+		resp := doRequest(t, env.srv, "GET", "/admin/segments/"+segID, token, "")
+		assertStatus(t, resp, http.StatusOK)
+		var body map[string]any
+		decodeJSON(t, resp, &body)
+
+		contacts, _ := body["contacts"].([]any)
+		if len(contacts) != 2 {
+			t.Errorf("expected 2 contacts in segment, got %d", len(contacts))
+		}
+	})
+
+	t.Run("segment without auth returns 401", func(t *testing.T) {
+		env := newTestEnv(t)
+
+		resp := doRequest(t, env.srv, "GET", "/admin/segments", "", "")
+		assertStatus(t, resp, http.StatusUnauthorized)
+		resp.Body.Close()
+	})
+}
+
+// ---------------------------------------------------------------------------
+// TestCampaignManagement
+// ---------------------------------------------------------------------------
+
+func TestCampaignManagement(t *testing.T) {
+	t.Run("create campaign with segment IDs returns 201", func(t *testing.T) {
+		env := newTestEnv(t)
+		token := loginAsAdmin(t, env)
+
+		seg := createSegment(t, env, token, "CampSeg", "")
+		segID, _ := seg["id"].(string)
+
+		segsJSON, _ := json.Marshal([]string{segID})
+		body := fmt.Sprintf(`{"subject":"Hello","html_body":"<p>Hi</p>","from_name":"Acme","from_email":"noreply@acme.com","segment_ids":%s}`, segsJSON)
+		resp := doRequest(t, env.srv, "POST", "/admin/campaigns", token, body)
+		assertStatus(t, resp, http.StatusCreated)
+
+		var c map[string]any
+		decodeJSON(t, resp, &c)
+
+		if c["id"] == nil || c["id"] == "" {
+			t.Error("expected non-empty id")
+		}
+		if c["subject"] != "Hello" {
+			t.Errorf("subject: got %v", c["subject"])
+		}
+		if c["status"] != "draft" {
+			t.Errorf("status: got %v, want draft", c["status"])
+		}
+	})
+
+	t.Run("list campaigns includes stats fields", func(t *testing.T) {
+		env := newTestEnv(t)
+		token := loginAsAdmin(t, env)
+
+		createCampaign(t, env, token, []string{})
+
+		resp := doRequest(t, env.srv, "GET", "/admin/campaigns", token, "")
+		assertStatus(t, resp, http.StatusOK)
+
+		var campaigns []map[string]any
+		decodeJSON(t, resp, &campaigns)
+
+		if len(campaigns) == 0 {
+			t.Fatal("expected at least one campaign")
+		}
+		c := campaigns[0]
+		for _, field := range []string{"id", "subject", "status", "created_at", "total", "sent", "queued", "failed", "opened"} {
+			if _, ok := c[field]; !ok {
+				t.Errorf("campaign list item missing field %q", field)
+			}
+		}
+	})
+
+	t.Run("get campaign by ID returns campaign with stats", func(t *testing.T) {
+		env := newTestEnv(t)
+		token := loginAsAdmin(t, env)
+
+		c := createCampaign(t, env, token, []string{})
+		campaignID, _ := c["id"].(string)
+
+		resp := doRequest(t, env.srv, "GET", "/admin/campaigns/"+campaignID, token, "")
+		assertStatus(t, resp, http.StatusOK)
+
+		var body map[string]any
+		decodeJSON(t, resp, &body)
+
+		if body["campaign"] == nil {
+			t.Error("expected campaign field in response")
+		}
+		if body["stats"] == nil {
+			t.Error("expected stats field in response")
+		}
+	})
+
+	t.Run("update draft campaign", func(t *testing.T) {
+		env := newTestEnv(t)
+		token := loginAsAdmin(t, env)
+
+		c := createCampaign(t, env, token, []string{})
+		campaignID, _ := c["id"].(string)
+
+		resp := doRequest(t, env.srv, "PUT", "/admin/campaigns/"+campaignID, token,
+			`{"subject":"Updated Subject","html_body":"<p>Updated</p>","from_name":"Updated Sender","from_email":"updated@example.com","segment_ids":[]}`)
+		assertStatus(t, resp, http.StatusOK)
+
+		var updated map[string]any
+		decodeJSON(t, resp, &updated)
+
+		if updated["subject"] != "Updated Subject" {
+			t.Errorf("subject after update: got %v", updated["subject"])
+		}
+	})
+
+	t.Run("delete draft campaign returns 200 or 204", func(t *testing.T) {
+		env := newTestEnv(t)
+		token := loginAsAdmin(t, env)
+
+		c := createCampaign(t, env, token, []string{})
+		campaignID, _ := c["id"].(string)
+
+		resp := doRequest(t, env.srv, "DELETE", "/admin/campaigns/"+campaignID, token, "")
+		if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent {
+			body := readBody(resp)
+			t.Fatalf("expected 200 or 204, got %d (body=%q)", resp.StatusCode, body)
+		}
+		resp.Body.Close()
+	})
+
+	t.Run("campaign without auth returns 401", func(t *testing.T) {
+		env := newTestEnv(t)
+
+		resp := doRequest(t, env.srv, "GET", "/admin/campaigns", "", "")
+		assertStatus(t, resp, http.StatusUnauthorized)
+		resp.Body.Close()
+	})
+
+	t.Run("campaign create without subject returns 400", func(t *testing.T) {
+		env := newTestEnv(t)
+		token := loginAsAdmin(t, env)
+
+		resp := doRequest(t, env.srv, "POST", "/admin/campaigns", token,
+			`{"html_body":"<p>No subject</p>"}`)
+		assertStatus(t, resp, http.StatusBadRequest)
+		resp.Body.Close()
+	})
+
+	t.Run("campaign create without html_body returns 400", func(t *testing.T) {
+		env := newTestEnv(t)
+		token := loginAsAdmin(t, env)
+
+		resp := doRequest(t, env.srv, "POST", "/admin/campaigns", token,
+			`{"subject":"No body"}`)
+		assertStatus(t, resp, http.StatusBadRequest)
+		resp.Body.Close()
+	})
+
+	t.Run("get non-existent campaign returns 404", func(t *testing.T) {
+		env := newTestEnv(t)
+		token := loginAsAdmin(t, env)
+
+		resp := doRequest(t, env.srv, "GET", "/admin/campaigns/no-such-id", token, "")
+		assertStatus(t, resp, http.StatusNotFound)
+		resp.Body.Close()
+	})
+}
+
+// ---------------------------------------------------------------------------
+// TestCampaignSending
+// ---------------------------------------------------------------------------
+
+func TestCampaignSending(t *testing.T) {
+	t.Run("send campaign returns 202 with status sending", func(t *testing.T) {
+		env := newTestEnv(t)
+		token := loginAsAdmin(t, env)
+
+		seg := createSegment(t, env, token, "SendSeg1", "")
+		segID, _ := seg["id"].(string)
+		c := createContact(t, env, token, "recipient1@test.com", "Recipient One")
+		addContactToSegment(t, env, token, segID, c["id"].(string))
+
+		camp := createCampaign(t, env, token, []string{segID})
+		campaignID, _ := camp["id"].(string)
+
+		resp := doRequest(t, env.srv, "POST", "/admin/campaigns/"+campaignID+"/send", token, "")
+		assertStatus(t, resp, http.StatusAccepted)
+
+		var body map[string]any
+		decodeJSON(t, resp, &body)
+		if body["status"] != "sending" {
+			t.Errorf("status: got %v, want sending", body["status"])
+		}
+	})
+
+	t.Run("campaign status changes to sent after processing", func(t *testing.T) {
+		env := newTestEnv(t)
+		token := loginAsAdmin(t, env)
+
+		seg := createSegment(t, env, token, "SendSeg2", "")
+		segID, _ := seg["id"].(string)
+		c := createContact(t, env, token, "recipient2@test.com", "Recipient Two")
+		addContactToSegment(t, env, token, segID, c["id"].(string))
+
+		camp := createCampaign(t, env, token, []string{segID})
+		campaignID, _ := camp["id"].(string)
+
+		sendResp := doRequest(t, env.srv, "POST", "/admin/campaigns/"+campaignID+"/send", token, "")
+		assertStatus(t, sendResp, http.StatusAccepted)
+		sendResp.Body.Close()
+
+		// Wait for async sender goroutine to complete.
+		waitForCampaignStatus(t, env, token, campaignID, "sent", 5*time.Second)
+	})
+
+	t.Run("recipients created from segment contacts deduplicated", func(t *testing.T) {
+		env := newTestEnv(t)
+		token := loginAsAdmin(t, env)
+
+		seg1 := createSegment(t, env, token, "DeduSeg1", "")
+		seg2 := createSegment(t, env, token, "DeduSeg2", "")
+		seg1ID, _ := seg1["id"].(string)
+		seg2ID, _ := seg2["id"].(string)
+
+		// Same contact in two segments — should only get one email.
+		c := createContact(t, env, token, "dedup@test.com", "Dedup")
+		contactID, _ := c["id"].(string)
+		addContactToSegment(t, env, token, seg1ID, contactID)
+		addContactToSegment(t, env, token, seg2ID, contactID)
+
+		camp := createCampaign(t, env, token, []string{seg1ID, seg2ID})
+		campaignID, _ := camp["id"].(string)
+
+		sendResp := doRequest(t, env.srv, "POST", "/admin/campaigns/"+campaignID+"/send", token, "")
+		assertStatus(t, sendResp, http.StatusAccepted)
+		sendResp.Body.Close()
+
+		waitForCampaignStatus(t, env, token, campaignID, "sent", 5*time.Second)
+
+		statsResp := doRequest(t, env.srv, "GET", "/admin/campaigns/"+campaignID+"/stats", token, "")
+		assertStatus(t, statsResp, http.StatusOK)
+		var stats map[string]any
+		decodeJSON(t, statsResp, &stats)
+
+		total, _ := stats["total"].(float64)
+		if int(total) != 1 {
+			t.Errorf("deduplicated total: got %v, want 1", stats["total"])
+		}
+	})
+
+	t.Run("unsubscribed contacts excluded from sending", func(t *testing.T) {
+		env := newTestEnv(t)
+		token := loginAsAdmin(t, env)
+
+		seg := createSegment(t, env, token, "UnsubSeg", "")
+		segID, _ := seg["id"].(string)
+
+		// Create two contacts; unsubscribe one directly via the store.
+		cSub := createContact(t, env, token, "subscribed@test.com", "Subscribed")
+		cUnsub := createContact(t, env, token, "unsubbed@test.com", "Unsubbed")
+		addContactToSegment(t, env, token, segID, cSub["id"].(string))
+		addContactToSegment(t, env, token, segID, cUnsub["id"].(string))
+
+		// Get unsubscribe token for the second contact and use the public endpoint.
+		unsubContact, err := env.store.GetContactByEmail("unsubbed@test.com")
+		if err != nil {
+			t.Fatalf("GetContactByEmail: %v", err)
+		}
+		unsubResp := doRequest(t, env.srv, "POST", "/unsubscribe/"+unsubContact.UnsubscribeToken, "", "")
+		if unsubResp.StatusCode != http.StatusOK {
+			t.Fatalf("unsubscribe: got %d", unsubResp.StatusCode)
+		}
+		unsubResp.Body.Close()
+
+		camp := createCampaign(t, env, token, []string{segID})
+		campaignID, _ := camp["id"].(string)
+
+		sendResp := doRequest(t, env.srv, "POST", "/admin/campaigns/"+campaignID+"/send", token, "")
+		assertStatus(t, sendResp, http.StatusAccepted)
+		sendResp.Body.Close()
+
+		waitForCampaignStatus(t, env, token, campaignID, "sent", 5*time.Second)
+
+		statsResp := doRequest(t, env.srv, "GET", "/admin/campaigns/"+campaignID+"/stats", token, "")
+		assertStatus(t, statsResp, http.StatusOK)
+		var stats map[string]any
+		decodeJSON(t, statsResp, &stats)
+
+		total, _ := stats["total"].(float64)
+		if int(total) != 1 {
+			t.Errorf("expected 1 recipient (subscribed only), got %v", stats["total"])
+		}
+	})
+
+	t.Run("campaign stats reflect sent count", func(t *testing.T) {
+		env := newTestEnv(t)
+		token := loginAsAdmin(t, env)
+
+		seg := createSegment(t, env, token, "StatsSeg", "")
+		segID, _ := seg["id"].(string)
+		for i := range 3 {
+			c := createContact(t, env, token, fmt.Sprintf("stats%d@test.com", i), fmt.Sprintf("Stats%d", i))
+			addContactToSegment(t, env, token, segID, c["id"].(string))
+		}
+
+		camp := createCampaign(t, env, token, []string{segID})
+		campaignID, _ := camp["id"].(string)
+
+		sendResp := doRequest(t, env.srv, "POST", "/admin/campaigns/"+campaignID+"/send", token, "")
+		assertStatus(t, sendResp, http.StatusAccepted)
+		sendResp.Body.Close()
+
+		waitForCampaignStatus(t, env, token, campaignID, "sent", 5*time.Second)
+
+		statsResp := doRequest(t, env.srv, "GET", "/admin/campaigns/"+campaignID+"/stats", token, "")
+		assertStatus(t, statsResp, http.StatusOK)
+		var stats map[string]any
+		decodeJSON(t, statsResp, &stats)
+
+		sent, _ := stats["sent"].(float64)
+		if int(sent) != 3 {
+			t.Errorf("sent count: got %v, want 3", stats["sent"])
+		}
+	})
+
+	t.Run("cannot send non-draft campaign", func(t *testing.T) {
+		env := newTestEnv(t)
+		token := loginAsAdmin(t, env)
+
+		seg := newTestEnvSegWithContact(t, env, token, "NoDraftSeg", "nondraft@test.com")
+		camp := createCampaign(t, env, token, []string{seg})
+		campaignID, _ := camp["id"].(string)
+
+		// First send.
+		send1 := doRequest(t, env.srv, "POST", "/admin/campaigns/"+campaignID+"/send", token, "")
+		assertStatus(t, send1, http.StatusAccepted)
+		send1.Body.Close()
+
+		waitForCampaignStatus(t, env, token, campaignID, "sent", 5*time.Second)
+
+		// Second send must fail.
+		send2 := doRequest(t, env.srv, "POST", "/admin/campaigns/"+campaignID+"/send", token, "")
+		if send2.StatusCode != http.StatusBadRequest && send2.StatusCode != http.StatusConflict {
+			body := readBody(send2)
+			t.Errorf("expected 400 or 409 for resending, got %d (body=%q)", send2.StatusCode, body)
+		} else {
+			send2.Body.Close()
+		}
+	})
+}
+
+// newTestEnvSegWithContact is a small helper that creates a named segment,
+// creates a contact, adds the contact to the segment, and returns the segment ID.
+func newTestEnvSegWithContact(t *testing.T, env *testEnv, token, segName, contactEmail string) string {
+	t.Helper()
+	seg := createSegment(t, env, token, segName, "")
+	segID, _ := seg["id"].(string)
+	c := createContact(t, env, token, contactEmail, "Contact")
+	addContactToSegment(t, env, token, segID, c["id"].(string))
+	return segID
+}
+
+// ---------------------------------------------------------------------------
+// TestTrackingPixel
+// ---------------------------------------------------------------------------
+
+func TestTrackingPixel(t *testing.T) {
+	t.Run("GET /track/{valid-id} returns image/gif", func(t *testing.T) {
+		env := newTestEnv(t)
+		token := loginAsAdmin(t, env)
+
+		// Send a campaign so we have a real recipient ID.
+		segID := newTestEnvSegWithContact(t, env, token, "TrackSeg1", "track1@test.com")
+		camp := createCampaign(t, env, token, []string{segID})
+		campaignID, _ := camp["id"].(string)
+
+		sendResp := doRequest(t, env.srv, "POST", "/admin/campaigns/"+campaignID+"/send", token, "")
+		assertStatus(t, sendResp, http.StatusAccepted)
+		sendResp.Body.Close()
+		waitForCampaignStatus(t, env, token, campaignID, "sent", 5*time.Second)
+
+		// Get a recipient ID.
+		recipients, err := env.store.GetCampaignRecipients(campaignID)
+		if err != nil || len(recipients) == 0 {
+			t.Fatalf("GetCampaignRecipients: %v, len=%d", err, len(recipients))
+		}
+		recipientID := recipients[0].ID
+
+		resp := doRequest(t, env.srv, "GET", "/track/"+recipientID, "", "")
+		assertStatus(t, resp, http.StatusOK)
+
+		ct := resp.Header.Get("Content-Type")
+		if ct != "image/gif" {
+			t.Errorf("Content-Type: got %q, want image/gif", ct)
+		}
+		resp.Body.Close()
+	})
+
+	t.Run("GET /track/{valid-id} records open in stats", func(t *testing.T) {
+		env := newTestEnv(t)
+		token := loginAsAdmin(t, env)
+
+		segID := newTestEnvSegWithContact(t, env, token, "TrackSeg2", "track2@test.com")
+		camp := createCampaign(t, env, token, []string{segID})
+		campaignID, _ := camp["id"].(string)
+
+		sendResp := doRequest(t, env.srv, "POST", "/admin/campaigns/"+campaignID+"/send", token, "")
+		assertStatus(t, sendResp, http.StatusAccepted)
+		sendResp.Body.Close()
+		waitForCampaignStatus(t, env, token, campaignID, "sent", 5*time.Second)
+
+		recipients, err := env.store.GetCampaignRecipients(campaignID)
+		if err != nil || len(recipients) == 0 {
+			t.Fatalf("GetCampaignRecipients: %v, len=%d", err, len(recipients))
+		}
+		recipientID := recipients[0].ID
+
+		// Hit tracking pixel.
+		trackResp := doRequest(t, env.srv, "GET", "/track/"+recipientID, "", "")
+		trackResp.Body.Close()
+
+		// Stats should show 1 opened.
+		statsResp := doRequest(t, env.srv, "GET", "/admin/campaigns/"+campaignID+"/stats", token, "")
+		assertStatus(t, statsResp, http.StatusOK)
+		var stats map[string]any
+		decodeJSON(t, statsResp, &stats)
+
+		opened, _ := stats["opened"].(float64)
+		if int(opened) != 1 {
+			t.Errorf("opened count after pixel hit: got %v, want 1", stats["opened"])
+		}
+	})
+
+	t.Run("GET /track/{invalid-id} still returns 200 gif (no info leak)", func(t *testing.T) {
+		env := newTestEnv(t)
+
+		resp := doRequest(t, env.srv, "GET", "/track/totally-fake-recipient-id", "", "")
+		assertStatus(t, resp, http.StatusOK)
+
+		ct := resp.Header.Get("Content-Type")
+		if ct != "image/gif" {
+			t.Errorf("Content-Type: got %q, want image/gif", ct)
+		}
+		resp.Body.Close()
+	})
+
+	t.Run("second open does not update opened_at", func(t *testing.T) {
+		env := newTestEnv(t)
+		token := loginAsAdmin(t, env)
+
+		segID := newTestEnvSegWithContact(t, env, token, "TrackSeg3", "track3@test.com")
+		camp := createCampaign(t, env, token, []string{segID})
+		campaignID, _ := camp["id"].(string)
+
+		sendResp := doRequest(t, env.srv, "POST", "/admin/campaigns/"+campaignID+"/send", token, "")
+		assertStatus(t, sendResp, http.StatusAccepted)
+		sendResp.Body.Close()
+		waitForCampaignStatus(t, env, token, campaignID, "sent", 5*time.Second)
+
+		recipients, err := env.store.GetCampaignRecipients(campaignID)
+		if err != nil || len(recipients) == 0 {
+			t.Fatalf("GetCampaignRecipients: %v, len=%d", err, len(recipients))
+		}
+		recipientID := recipients[0].ID
+
+		// First open.
+		r1 := doRequest(t, env.srv, "GET", "/track/"+recipientID, "", "")
+		r1.Body.Close()
+
+		firstRecipients, _ := env.store.GetCampaignRecipients(campaignID)
+		var firstOpenedAt *time.Time
+		if len(firstRecipients) > 0 {
+			firstOpenedAt = firstRecipients[0].OpenedAt
+		}
+
+		time.Sleep(10 * time.Millisecond)
+
+		// Second open.
+		r2 := doRequest(t, env.srv, "GET", "/track/"+recipientID, "", "")
+		r2.Body.Close()
+
+		secondRecipients, _ := env.store.GetCampaignRecipients(campaignID)
+		var secondOpenedAt *time.Time
+		if len(secondRecipients) > 0 {
+			secondOpenedAt = secondRecipients[0].OpenedAt
+		}
+
+		if firstOpenedAt == nil {
+			t.Fatal("opened_at not set after first open")
+		}
+		if secondOpenedAt == nil {
+			t.Fatal("opened_at nil after second open")
+		}
+		if !firstOpenedAt.Equal(*secondOpenedAt) {
+			t.Errorf("opened_at changed on second open: first=%v second=%v", firstOpenedAt, secondOpenedAt)
+		}
+	})
+}
+
+// ---------------------------------------------------------------------------
+// TestUnsubscribe
+// ---------------------------------------------------------------------------
+
+func TestUnsubscribe(t *testing.T) {
+	t.Run("GET /unsubscribe/{token} returns HTML page", func(t *testing.T) {
+		env := newTestEnv(t)
+		token := loginAsAdmin(t, env)
+
+		createContact(t, env, token, "unsub1@test.com", "Unsub One")
+		contact, err := env.store.GetContactByEmail("unsub1@test.com")
+		if err != nil {
+			t.Fatalf("GetContactByEmail: %v", err)
+		}
+
+		resp := doRequest(t, env.srv, "GET", "/unsubscribe/"+contact.UnsubscribeToken, "", "")
+		assertStatus(t, resp, http.StatusOK)
+
+		ct := resp.Header.Get("Content-Type")
+		if !strings.Contains(ct, "text/html") {
+			t.Errorf("Content-Type: got %q, want text/html", ct)
+		}
+
+		body := readBody(resp)
+		lower := strings.ToLower(body)
+		if !strings.Contains(lower, "unsubscribe") {
+			t.Error("expected 'unsubscribe' word in GET /unsubscribe response")
+		}
+	})
+
+	t.Run("POST /unsubscribe/{token} unsubscribes contact", func(t *testing.T) {
+		env := newTestEnv(t)
+		adminToken := loginAsAdmin(t, env)
+
+		createContact(t, env, adminToken, "unsub2@test.com", "Unsub Two")
+		contact, err := env.store.GetContactByEmail("unsub2@test.com")
+		if err != nil {
+			t.Fatalf("GetContactByEmail: %v", err)
+		}
+		if contact.Unsubscribed {
+			t.Fatal("contact should not be unsubscribed initially")
+		}
+
+		resp := doRequest(t, env.srv, "POST", "/unsubscribe/"+contact.UnsubscribeToken, "", "")
+		assertStatus(t, resp, http.StatusOK)
+		resp.Body.Close()
+
+		updated, err := env.store.GetContactByEmail("unsub2@test.com")
+		if err != nil {
+			t.Fatalf("GetContactByEmail after unsubscribe: %v", err)
+		}
+		if !updated.Unsubscribed {
+			t.Error("contact should be unsubscribed after POST /unsubscribe")
+		}
+	})
+
+	t.Run("unsubscribed contact excluded from future sends", func(t *testing.T) {
+		env := newTestEnv(t)
+		adminToken := loginAsAdmin(t, env)
+
+		seg := createSegment(t, env, adminToken, "ExcludeUnsubSeg", "")
+		segID, _ := seg["id"].(string)
+
+		c := createContact(t, env, adminToken, "exclude@test.com", "Exclude")
+		contactID, _ := c["id"].(string)
+		addContactToSegment(t, env, adminToken, segID, contactID)
+
+		// Unsubscribe.
+		contact, _ := env.store.GetContactByEmail("exclude@test.com")
+		unsubResp := doRequest(t, env.srv, "POST", "/unsubscribe/"+contact.UnsubscribeToken, "", "")
+		unsubResp.Body.Close()
+
+		// Send campaign — the unsubscribed contact must be excluded.
+		camp := createCampaign(t, env, adminToken, []string{segID})
+		campaignID, _ := camp["id"].(string)
+
+		sendResp := doRequest(t, env.srv, "POST", "/admin/campaigns/"+campaignID+"/send", adminToken, "")
+		assertStatus(t, sendResp, http.StatusAccepted)
+		sendResp.Body.Close()
+
+		waitForCampaignStatus(t, env, adminToken, campaignID, "sent", 5*time.Second)
+
+		statsResp := doRequest(t, env.srv, "GET", "/admin/campaigns/"+campaignID+"/stats", adminToken, "")
+		assertStatus(t, statsResp, http.StatusOK)
+		var stats map[string]any
+		decodeJSON(t, statsResp, &stats)
+
+		total, _ := stats["total"].(float64)
+		if int(total) != 0 {
+			t.Errorf("unsubscribed contact must be excluded: total got %v, want 0", stats["total"])
+		}
+	})
+
+	t.Run("invalid unsubscribe token returns 404", func(t *testing.T) {
+		env := newTestEnv(t)
+
+		resp := doRequest(t, env.srv, "GET", "/unsubscribe/invalid-token-xyz", "", "")
+		assertStatus(t, resp, http.StatusNotFound)
+		resp.Body.Close()
+	})
+
+	t.Run("double unsubscribe is idempotent", func(t *testing.T) {
+		env := newTestEnv(t)
+		adminToken := loginAsAdmin(t, env)
+
+		createContact(t, env, adminToken, "doubleun@test.com", "Double Un")
+		contact, _ := env.store.GetContactByEmail("doubleun@test.com")
+
+		resp1 := doRequest(t, env.srv, "POST", "/unsubscribe/"+contact.UnsubscribeToken, "", "")
+		assertStatus(t, resp1, http.StatusOK)
+		resp1.Body.Close()
+
+		resp2 := doRequest(t, env.srv, "POST", "/unsubscribe/"+contact.UnsubscribeToken, "", "")
+		// A second POST to the same token is either 200 or an error — must not crash.
+		if resp2.StatusCode != http.StatusOK && resp2.StatusCode != http.StatusNotFound {
+			body := readBody(resp2)
+			t.Errorf("double unsubscribe: expected 200 or 404, got %d (body=%q)", resp2.StatusCode, body)
+		} else {
+			resp2.Body.Close()
+		}
+
+		// Either way, the contact must remain unsubscribed.
+		updated, _ := env.store.GetContactByEmail("doubleun@test.com")
+		if !updated.Unsubscribed {
+			t.Error("contact must stay unsubscribed after double POST")
+		}
+	})
+}
+
+// ---------------------------------------------------------------------------
+// TestContactSegmentRelationship
+// ---------------------------------------------------------------------------
+
+func TestContactSegmentRelationship(t *testing.T) {
+	t.Run("contact appears in multiple segments", func(t *testing.T) {
+		env := newTestEnv(t)
+		token := loginAsAdmin(t, env)
+
+		c := createContact(t, env, token, "multiseg@test.com", "MultiSeg")
+		contactID, _ := c["id"].(string)
+
+		seg1 := createSegment(t, env, token, "RelSeg1", "")
+		seg2 := createSegment(t, env, token, "RelSeg2", "")
+		addContactToSegment(t, env, token, seg1["id"].(string), contactID)
+		addContactToSegment(t, env, token, seg2["id"].(string), contactID)
+
+		// List segments: both should report contact_count >= 1.
+		resp := doRequest(t, env.srv, "GET", "/admin/segments", token, "")
+		assertStatus(t, resp, http.StatusOK)
+		var segments []map[string]any
+		decodeJSON(t, resp, &segments)
+
+		for _, seg := range []map[string]any{seg1, seg2} {
+			segID, _ := seg["id"].(string)
+			var found map[string]any
+			for _, s := range segments {
+				if s["id"] == segID {
+					found = s
+				}
+			}
+			if found == nil {
+				t.Errorf("segment %q not found in list", segID)
+				continue
+			}
+			count, _ := found["contact_count"].(float64)
+			if int(count) < 1 {
+				t.Errorf("segment %q contact_count: got %v, want >= 1", segID, found["contact_count"])
+			}
+		}
+	})
+
+	t.Run("deleting contact removes it from all segments", func(t *testing.T) {
+		env := newTestEnv(t)
+		token := loginAsAdmin(t, env)
+
+		c := createContact(t, env, token, "toremove@test.com", "To Remove")
+		contactID, _ := c["id"].(string)
+
+		seg := createSegment(t, env, token, "CascadeDelSeg", "")
+		segID, _ := seg["id"].(string)
+		addContactToSegment(t, env, token, segID, contactID)
+
+		// Delete the contact.
+		delResp := doRequest(t, env.srv, "DELETE", "/admin/contacts/"+contactID, token, "")
+		delResp.Body.Close()
+
+		// The segment should now have 0 contacts.
+		segResp := doRequest(t, env.srv, "GET", "/admin/segments/"+segID, token, "")
+		assertStatus(t, segResp, http.StatusOK)
+		var body map[string]any
+		decodeJSON(t, segResp, &body)
+
+		contacts, _ := body["contacts"].([]any)
+		if len(contacts) != 0 {
+			t.Errorf("expected 0 contacts after deleting contact, got %d", len(contacts))
+		}
+	})
+
+	t.Run("deleting segment removes contact associations", func(t *testing.T) {
+		env := newTestEnv(t)
+		token := loginAsAdmin(t, env)
+
+		c := createContact(t, env, token, "assoc@test.com", "Assoc")
+		contactID, _ := c["id"].(string)
+
+		seg := createSegment(t, env, token, "CascadeSegDel", "")
+		segID, _ := seg["id"].(string)
+		addContactToSegment(t, env, token, segID, contactID)
+
+		// Delete the segment.
+		delResp := doRequest(t, env.srv, "DELETE", "/admin/segments/"+segID, token, "")
+		delResp.Body.Close()
+
+		// Fetch contact detail — its segments list should not include the deleted segment.
+		contResp := doRequest(t, env.srv, "GET", "/admin/contacts/"+contactID, token, "")
+		assertStatus(t, contResp, http.StatusOK)
+		var contact map[string]any
+		decodeJSON(t, contResp, &contact)
+
+		segs, _ := contact["segments"].([]any)
+		for _, s := range segs {
+			if m, ok := s.(map[string]any); ok && m["id"] == segID {
+				t.Errorf("deleted segment %q still listed on contact", segID)
+			}
+		}
+	})
+
+	t.Run("contact segments listed in contact detail", func(t *testing.T) {
+		env := newTestEnv(t)
+		token := loginAsAdmin(t, env)
+
+		c := createContact(t, env, token, "detail@test.com", "Detail")
+		contactID, _ := c["id"].(string)
+
+		seg1 := createSegment(t, env, token, "DetailSeg1", "")
+		seg2 := createSegment(t, env, token, "DetailSeg2", "")
+		addContactToSegment(t, env, token, seg1["id"].(string), contactID)
+		addContactToSegment(t, env, token, seg2["id"].(string), contactID)
+
+		resp := doRequest(t, env.srv, "GET", "/admin/contacts/"+contactID, token, "")
+		assertStatus(t, resp, http.StatusOK)
+		var contact map[string]any
+		decodeJSON(t, resp, &contact)
+
+		segs, _ := contact["segments"].([]any)
+		if len(segs) != 2 {
+			t.Errorf("expected 2 segments on contact detail, got %d", len(segs))
 		}
 	})
 }
