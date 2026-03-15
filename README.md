@@ -14,6 +14,7 @@ Minimal Identity and Access Management service. OAuth2 + OpenID Connect in a sin
 ## Quick Start
 
 ```bash
+cd backend
 go build -o mini-iam .
 ./mini-iam
 ```
@@ -45,12 +46,14 @@ go build -o mini-iam .
 ## Project Structure
 
 ```
-main.go         - Server startup, routing
-store.go        - SQLite operations
-models.go       - Data models
-token.go        - JWT creation/validation, JWKS
-handlers.go     - HTTP handlers
-middleware.go   - CORS middleware
+backend/
+  main.go         - Server startup, routing
+  store.go        - SQLite operations
+  models.go       - Data models
+  token.go        - JWT creation/validation, JWKS
+  handlers.go     - HTTP handlers
+  middleware.go   - CORS middleware
+docker-compose.yml
 ```
 
 ## Client Libraries
