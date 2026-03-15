@@ -1,13 +1,11 @@
 services:
   mini-iam:
     build: ./backend
-    ports:
-      - "8080:8080"
     volumes:
       - mini-iam-data:/data
     environment:
       PORT: "8080"
-      ISSUER_URL: "http://localhost:8080"
+      ISSUER_URL: "http://localhost:3000/api"
       CORS_ORIGINS: "*"
       ADMIN_EMAIL: "admin@mini-iam.local"
       ADMIN_PASSWORD: "changeme"
@@ -17,6 +15,15 @@ services:
       timeout: 5s
       start_period: 10s
       retries: 3
+    restart: unless-stopped
+
+  frontend:
+    build: ./frontend
+    ports:
+      - "3000:3000"
+    depends_on:
+      mini-iam:
+        condition: service_healthy
     restart: unless-stopped
 
 volumes:

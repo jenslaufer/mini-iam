@@ -1,31 +1,46 @@
 # mini-iam
 
-Minimal Identity and Access Management service. OAuth2 + OpenID Connect in a single Go binary.
+Minimal Identity and Access Management service. OAuth2 + OpenID Connect in a single Go binary with Vue 3 admin UI.
 
 ## Features
 
 - OAuth2 authorization code flow with PKCE
 - OpenID Connect discovery, JWKS, userinfo
 - RS256 JWT tokens (RSA key auto-generated, stored in SQLite)
-- Refresh token rotation
-- SQLite database (pure Go, no CGo)
-- Admin account with user/client management
+- Refresh token rotation and revocation
+- Admin UI for user and client management
 - Role-based access control (user/admin)
-- CORS middleware
+- SQLite database (pure Go, no CGo)
 
 ## Quick Start
 
 ```bash
+docker compose up
+```
+
+Open http://localhost:3000 and log in with the admin credentials.
+
+### Development
+
+Backend:
+```bash
 cd backend
 go build -o mini-iam .
-./mini-iam
+ADMIN_EMAIL=admin@mini-iam.local ADMIN_PASSWORD=changeme ./mini-iam
+```
+
+Frontend:
+```bash
+cd frontend
+npm install
+npm run dev
 ```
 
 ## Configuration
 
 | Variable | Default | Description |
 |---|---|---|
-| `PORT` | `8080` | HTTP listen port |
+| `PORT` | `8080` | Backend HTTP port |
 | `ISSUER_URL` | `http://localhost:8080` | Token issuer / base URL |
 | `CORS_ORIGINS` | `*` | Allowed CORS origins |
 | `ADMIN_EMAIL` | — | Seed admin account email |
@@ -57,12 +72,20 @@ go build -o mini-iam .
 
 ```
 backend/
-  main.go         - Server startup, routing
-  store.go        - SQLite operations
-  models.go       - Data models
-  token.go        - JWT creation/validation, JWKS
-  handlers.go     - HTTP handlers
-  middleware.go   - CORS middleware
+  main.go           - Server startup, routing
+  store.go          - SQLite operations
+  models.go         - Data models
+  token.go          - JWT creation/validation, JWKS
+  handlers.go       - HTTP handlers
+  middleware.go     - CORS middleware
+  main_test.go      - 102 integration tests
+frontend/
+  src/
+    views/          - Login, Dashboard, Users, Clients
+    components/     - Reusable UI components
+    api/            - Backend API client
+    stores/         - Pinia stores (auth, toast)
+  nginx.conf        - Reverse proxy config
 docker-compose.yml
 ```
 
