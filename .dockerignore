@@ -1,0 +1,34 @@
+# Version control
+.git
+.gitignore
+
+# Docker files (not needed in build context)
+Dockerfile
+docker-compose.yml
+.dockerignore
+
+# Documentation
+README.md
+*.md
+marketing/
+
+# Development and test artifacts
+*_test.go
+testdata/
+
+# Local data and secrets
+*.db
+*.sqlite
+data/
+.env
+.env.*
+
+# OS artifacts
+.DS_Store
+Thumbs.db
+
+# Editor artifacts
+.idea/
+.vscode/
+*.swp
+*.swo
