@@ -123,10 +123,11 @@ func (s *Store) Delete(id string) error {
 	}
 	defer tx.Rollback()
 
-	// Delete all tenant-scoped data in dependency order
+	// Delete all tenant-scoped tables. Junction tables (campaign_segments,
+	// contact_segments, campaign_recipients) have no tenant_id and are
+	// removed automatically via ON DELETE CASCADE when their parent rows go.
 	for _, table := range []string{
-		"campaign_recipients", "campaign_segments", "campaigns",
-		"contact_segments", "contacts", "segments",
+		"campaigns", "contacts", "segments",
 		"auth_codes", "refresh_tokens", "keys", "clients", "users",
 	} {
 		if _, err := tx.Exec("DELETE FROM "+table+" WHERE tenant_id = ?", id); err != nil {
