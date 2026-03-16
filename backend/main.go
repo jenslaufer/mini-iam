@@ -114,7 +114,7 @@ func main() {
 
 	// Start campaign sender worker (with per-tenant SMTP support)
 	sender := marketing.NewCampaignSender(marketingStore, mailer, issuer, smtpRateMS)
-	sender.SetSMTPProvider(tenantStore)
+	sender.SetTenantProvider(tenantStore)
 	sender.Start()
 
 	iamHandler := iam.NewHandler(iamStore, registry, issuer)
@@ -151,10 +151,10 @@ func main() {
 	mux.HandleFunc("/track/", marketingHandler.TrackOpen)
 	mux.HandleFunc("/unsubscribe/", marketingHandler.Unsubscribe)
 
-	// Tenant management API (admin-protected)
-	exportImportHandler := tenant.NewExportImportHandler(tenantStore, iamStore, marketingStore, registry)
+	// Tenant management API (platform-admin-protected)
+	exportImportHandler := tenant.NewExportImportHandler(tenantStore, iamStore, marketingStore, registry, defaultTenantID)
 	mux.HandleFunc("/admin/tenants", func(w http.ResponseWriter, r *http.Request) {
-		if _, ok := iam.CheckAdmin(registry, iamStore, w, r); !ok {
+		if _, ok := iam.CheckAdminCrossTenant(registry, iamStore, defaultTenantID, w, r); !ok {
 			return
 		}
 		switch r.Method {
@@ -163,6 +163,10 @@ func main() {
 			if err != nil {
 				iam.WriteError(w, http.StatusInternalServerError, "server_error", "failed to list tenants")
 				return
+			}
+			// Sanitize: never expose SMTP passwords in API responses
+			for i := range tenants {
+				tenants[i].SMTP.Password = ""
 			}
 			iam.WriteJSON(w, http.StatusOK, tenants)
 		case http.MethodPost:
@@ -176,6 +180,10 @@ func main() {
 			}
 			if req.Slug == "" {
 				iam.WriteError(w, http.StatusBadRequest, "invalid_request", "slug required")
+				return
+			}
+			if err := tenant.ValidateSlug(req.Slug); err != nil {
+				iam.WriteError(w, http.StatusBadRequest, "invalid_request", err.Error())
 				return
 			}
 			if req.Name == "" {

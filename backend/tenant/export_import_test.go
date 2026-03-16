@@ -108,7 +108,7 @@ func newExportEnv(t *testing.T) *exportEnv {
 	_ = mktHandler
 
 	// Import/export handler — to be implemented in the tenant package.
-	exportHandler := tenant.NewExportImportHandler(tenantStore, iamStore, mktStore, registry)
+	exportHandler := tenant.NewExportImportHandler(tenantStore, iamStore, mktStore, registry, "")
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/login", iamHandler.Login)

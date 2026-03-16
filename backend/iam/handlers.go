@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"html"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -186,28 +187,20 @@ button:hover{background:#1d4ed8}
 <label>Password</label><input type="password" name="password" required>
 <button type="submit">Sign In</button>
 </form></body></html>`,
-		escapeHTML(q.Get("client_id")),
-		escapeHTML(q.Get("redirect_uri")),
-		escapeHTML(q.Get("state")),
-		escapeHTML(q.Get("scope")),
-		escapeHTML(q.Get("nonce")),
-		escapeHTML(q.Get("code_challenge")),
-		escapeHTML(q.Get("code_challenge_method")),
-		escapeHTML(q.Get("response_type")),
+		html.EscapeString(q.Get("client_id")),
+		html.EscapeString(q.Get("redirect_uri")),
+		html.EscapeString(q.Get("state")),
+		html.EscapeString(q.Get("scope")),
+		html.EscapeString(q.Get("nonce")),
+		html.EscapeString(q.Get("code_challenge")),
+		html.EscapeString(q.Get("code_challenge_method")),
+		html.EscapeString(q.Get("response_type")),
 	)
 
 	w.Header().Set("Content-Type", "text/html")
 	w.Write([]byte(html))
 }
 
-func escapeHTML(s string) string {
-	s = strings.ReplaceAll(s, "&", "&amp;")
-	s = strings.ReplaceAll(s, "<", "&lt;")
-	s = strings.ReplaceAll(s, ">", "&gt;")
-	s = strings.ReplaceAll(s, "\"", "&quot;")
-	s = strings.ReplaceAll(s, "'", "&#39;")
-	return s
-}
 
 func (h *Handler) AuthorizePOST(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseForm(); err != nil {
@@ -558,6 +551,9 @@ func (h *Handler) CreateClient(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, http.StatusMethodNotAllowed, "invalid_request", "method not allowed")
 		return
 	}
+	if _, ok := h.requireAdmin(w, r); !ok {
+		return
+	}
 
 	var req struct {
 		Name         string   `json:"name"`
@@ -640,10 +636,10 @@ func CheckAdmin(registry *TokenRegistry, store *Store, w http.ResponseWriter, r 
 	return user, true
 }
 
-// CheckAdminCrossTenant validates the Bearer token as admin without requiring
-// the token's tenant to match the request's tenant context. Used for global
-// admin endpoints like tenant import where the caller is an admin of any tenant.
-func CheckAdminCrossTenant(registry *TokenRegistry, store *Store, w http.ResponseWriter, r *http.Request) (*User, bool) {
+// CheckAdminCrossTenant validates the Bearer token as a platform admin.
+// The token's tenant must match platformTenantID (the default/platform tenant).
+// Used for global admin endpoints like tenant management and import.
+func CheckAdminCrossTenant(registry *TokenRegistry, store *Store, platformTenantID string, w http.ResponseWriter, r *http.Request) (*User, bool) {
 	auth := r.Header.Get("Authorization")
 	if !strings.HasPrefix(auth, "Bearer ") {
 		WriteError(w, http.StatusUnauthorized, "invalid_token", "Bearer token required")
@@ -673,6 +669,11 @@ func CheckAdminCrossTenant(registry *TokenRegistry, store *Store, w http.Respons
 	role, _ := claims["role"].(string)
 	if role != "admin" {
 		WriteError(w, http.StatusForbidden, "insufficient_scope", "admin role required")
+		return nil, false
+	}
+
+	if platformTenantID != "" && tid != platformTenantID {
+		WriteError(w, http.StatusForbidden, "insufficient_scope", "platform admin required")
 		return nil, false
 	}
 
@@ -881,7 +882,7 @@ button:hover{background:#1d4ed8}
 <label>Password</label><input type="password" name="password" required minlength="8" autofocus>
 <label>Confirm Password</label><input type="password" name="confirm" required minlength="8">
 <button type="submit">Activate</button>
-</form></body></html>`, escapeHTML(email))
+</form></body></html>`, html.EscapeString(email))
 
 	case http.MethodPost:
 		var password string

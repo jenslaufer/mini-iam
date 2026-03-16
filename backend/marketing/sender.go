@@ -57,9 +57,10 @@ func (m *LogMailer) Send(to, subject, htmlBody string, headers map[string]string
 	return nil
 }
 
-// TenantSMTPProvider looks up SMTP config for a tenant. Implemented by tenant.Store.
-type TenantSMTPProvider interface {
+// TenantProvider looks up tenant config. Implemented by tenant.Store.
+type TenantProvider interface {
 	GetSMTPConfig(tenantID string) (host, port, user, password, from, fromName string, rateMS int, err error)
+	GetTenantSlug(tenantID string) (string, error)
 }
 
 // --- Campaign Sender (background worker) ---
@@ -72,7 +73,7 @@ type sendRequest struct {
 type CampaignSender struct {
 	store          *Store
 	mailer         Mailer
-	smtpProvider   TenantSMTPProvider
+	tenantProvider TenantProvider
 	issuer         string
 	rateMS         int
 	queue          chan sendRequest
@@ -89,20 +90,31 @@ func NewCampaignSender(store *Store, mailer Mailer, issuer string, rateMS int) *
 	}
 }
 
-// SetSMTPProvider sets the tenant SMTP provider for per-tenant mailer selection.
-func (cs *CampaignSender) SetSMTPProvider(p TenantSMTPProvider) {
-	cs.smtpProvider = p
+// SetTenantProvider sets the tenant provider for per-tenant mailer selection and slug lookup.
+func (cs *CampaignSender) SetTenantProvider(p TenantProvider) {
+	cs.tenantProvider = p
 }
 
 // mailerForTenant returns a tenant-specific SMTPMailer if configured, otherwise the global mailer.
 func (cs *CampaignSender) mailerForTenant(tenantID string) (Mailer, int) {
-	if cs.smtpProvider != nil {
-		host, port, user, pass, from, fromName, rateMS, err := cs.smtpProvider.GetSMTPConfig(tenantID)
+	if cs.tenantProvider != nil {
+		host, port, user, pass, from, fromName, rateMS, err := cs.tenantProvider.GetSMTPConfig(tenantID)
 		if err == nil && host != "" {
 			return &SMTPMailer{Host: host, Port: port, User: user, Password: pass, From: from, FromName: fromName}, rateMS
 		}
 	}
 	return cs.mailer, cs.rateMS
+}
+
+// tenantBaseURL returns the issuer URL with tenant path prefix if applicable.
+func (cs *CampaignSender) tenantBaseURL(tenantID string) string {
+	if cs.tenantProvider != nil {
+		slug, err := cs.tenantProvider.GetTenantSlug(tenantID)
+		if err == nil && slug != "" {
+			return cs.issuer + "/t/" + slug
+		}
+	}
+	return cs.issuer
 }
 
 func (cs *CampaignSender) Start() {
@@ -165,13 +177,14 @@ func (cs *CampaignSender) processCampaign(campaignID string, tenantID string) {
 	}
 
 	mailer, rateMS := cs.mailerForTenant(tenantID)
+	baseURL := cs.tenantBaseURL(tenantID)
 
 	allSuccess := true
 	for _, r := range recipients {
-		// Template substitution
-		unsubscribeURL := fmt.Sprintf("%s/unsubscribe/%s", cs.issuer, cs.getUnsubscribeToken(store, r.ContactID))
-		trackingURL := fmt.Sprintf("%s/track/%s", cs.issuer, r.ID)
-		inviteURL := fmt.Sprintf("%s/activate/%s", cs.issuer, cs.getInviteToken(store, r.ContactID))
+		// Template substitution — URLs include tenant path prefix
+		unsubscribeURL := fmt.Sprintf("%s/unsubscribe/%s", baseURL, cs.getUnsubscribeToken(store, r.ContactID))
+		trackingURL := fmt.Sprintf("%s/track/%s", baseURL, r.ID)
+		inviteURL := fmt.Sprintf("%s/activate/%s", baseURL, cs.getInviteToken(store, r.ContactID))
 
 		body := campaign.HTMLBody
 		body = strings.ReplaceAll(body, "{{.Name}}", r.ContactName)

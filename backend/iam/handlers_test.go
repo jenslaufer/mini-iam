@@ -346,7 +346,8 @@ func TestRevokeMethodNotAllowed(t *testing.T) {
 
 func TestCreateClientEndpoint(t *testing.T) {
 	env := newHandlerEnv(t)
-	resp := postJSON(t, env, "/clients",
+	tok := adminToken(t, env)
+	resp := doReq(t, env, "POST", "/clients", tok,
 		`{"name":"MyApp","redirect_uris":["http://localhost/cb"]}`)
 	if resp.StatusCode != http.StatusCreated {
 		b, _ := io.ReadAll(resp.Body)
@@ -363,7 +364,8 @@ func TestCreateClientEndpoint(t *testing.T) {
 
 func TestCreateClientNoName(t *testing.T) {
 	env := newHandlerEnv(t)
-	resp := postJSON(t, env, "/clients", `{"redirect_uris":["http://localhost/cb"]}`)
+	tok := adminToken(t, env)
+	resp := doReq(t, env, "POST", "/clients", tok, `{"redirect_uris":["http://localhost/cb"]}`)
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Errorf("status = %d", resp.StatusCode)
@@ -372,7 +374,8 @@ func TestCreateClientNoName(t *testing.T) {
 
 func TestCreateClientNoRedirectURIs(t *testing.T) {
 	env := newHandlerEnv(t)
-	resp := postJSON(t, env, "/clients", `{"name":"NoURIs"}`)
+	tok := adminToken(t, env)
+	resp := doReq(t, env, "POST", "/clients", tok, `{"name":"NoURIs"}`)
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Errorf("status = %d", resp.StatusCode)
@@ -474,9 +477,10 @@ func TestAuthorizeGET(t *testing.T) {
 
 func TestAuthorizePOST(t *testing.T) {
 	env := newHandlerEnv(t)
+	tok := adminToken(t, env)
 
 	// Create client and user
-	resp := postJSON(t, env, "/clients", `{"name":"AuthApp","redirect_uris":["http://localhost/cb"]}`)
+	resp := doReq(t, env, "POST", "/clients", tok, `{"name":"AuthApp","redirect_uris":["http://localhost/cb"]}`)
 	client := readJSON(t, resp)
 	clientID := client["client_id"].(string)
 
@@ -513,8 +517,9 @@ func TestAuthorizePOST(t *testing.T) {
 
 func TestAuthorizePOSTWrongPassword(t *testing.T) {
 	env := newHandlerEnv(t)
+	tok := adminToken(t, env)
 
-	resp := postJSON(t, env, "/clients", `{"name":"App","redirect_uris":["http://localhost/cb"]}`)
+	resp := doReq(t, env, "POST", "/clients", tok, `{"name":"App","redirect_uris":["http://localhost/cb"]}`)
 	client := readJSON(t, resp)
 	clientID := client["client_id"].(string)
 
@@ -546,9 +551,10 @@ func TestAuthorizeMethodNotAllowed(t *testing.T) {
 
 func TestFullAuthCodeFlowWithPKCE(t *testing.T) {
 	env := newHandlerEnv(t)
+	tok := adminToken(t, env)
 
 	// Create client
-	resp := postJSON(t, env, "/clients", `{"name":"PKCE","redirect_uris":["http://localhost/cb"]}`)
+	resp := doReq(t, env, "POST", "/clients", tok, `{"name":"PKCE","redirect_uris":["http://localhost/cb"]}`)
 	client := readJSON(t, resp)
 	clientID := client["client_id"].(string)
 
@@ -593,11 +599,11 @@ func TestFullAuthCodeFlowWithPKCE(t *testing.T) {
 		b, _ := io.ReadAll(resp.Body)
 		t.Fatalf("token exchange: status = %d, body = %s", resp.StatusCode, b)
 	}
-	tok := readJSON(t, resp)
-	if tok["access_token"] == nil {
+	tokenResp := readJSON(t, resp)
+	if tokenResp["access_token"] == nil {
 		t.Error("no access_token")
 	}
-	if tok["id_token"] == nil {
+	if tokenResp["id_token"] == nil {
 		t.Error("no id_token")
 	}
 }
@@ -748,7 +754,7 @@ func TestAdminDeleteClientEndpoint(t *testing.T) {
 	env := newHandlerEnv(t)
 	tok := adminToken(t, env)
 
-	resp := postJSON(t, env, "/clients", `{"name":"DelApp","redirect_uris":["http://del/cb"]}`)
+	resp := doReq(t, env, "POST", "/clients", tok, `{"name":"DelApp","redirect_uris":["http://del/cb"]}`)
 	client := readJSON(t, resp)
 	clientID := client["client_id"].(string)
 

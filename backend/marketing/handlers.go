@@ -3,6 +3,7 @@ package marketing
 import (
 	"encoding/json"
 	"fmt"
+	"html"
 	"net/http"
 	"strings"
 
@@ -542,7 +543,7 @@ func (h *Handler) Unsubscribe(w http.ResponseWriter, r *http.Request) {
 <h2>Unsubscribe</h2>
 <p>Unsubscribe <strong>%s</strong> from future emails?</p>
 <form method="POST"><button type="submit">Unsubscribe</button></form>
-</div></body></html>`, escapeHTML(contact.Email))
+</div></body></html>`, html.EscapeString(contact.Email))
 
 	case http.MethodPost:
 		if err := store.UnsubscribeContact(token); err != nil {
@@ -565,11 +566,3 @@ func (h *Handler) Unsubscribe(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func escapeHTML(s string) string {
-	s = strings.ReplaceAll(s, "&", "&amp;")
-	s = strings.ReplaceAll(s, "<", "&lt;")
-	s = strings.ReplaceAll(s, ">", "&gt;")
-	s = strings.ReplaceAll(s, "\"", "&quot;")
-	s = strings.ReplaceAll(s, "'", "&#39;")
-	return s
-}

@@ -563,11 +563,13 @@ func (s *Store) GetCampaignStats(id string) (*CampaignStats, error) {
 	stats := &CampaignStats{}
 	err := s.db.QueryRow(
 		`SELECT COUNT(*) as total,
-		        COALESCE(SUM(CASE WHEN status = 'queued' THEN 1 ELSE 0 END), 0) as queued,
-		        COALESCE(SUM(CASE WHEN status = 'sent' THEN 1 ELSE 0 END), 0) as sent,
-		        COALESCE(SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END), 0) as failed,
-		        COALESCE(SUM(CASE WHEN opened_at IS NOT NULL THEN 1 ELSE 0 END), 0) as opened
-		 FROM campaign_recipients WHERE campaign_id = ?`, id,
+		        COALESCE(SUM(CASE WHEN cr.status = 'queued' THEN 1 ELSE 0 END), 0) as queued,
+		        COALESCE(SUM(CASE WHEN cr.status = 'sent' THEN 1 ELSE 0 END), 0) as sent,
+		        COALESCE(SUM(CASE WHEN cr.status = 'failed' THEN 1 ELSE 0 END), 0) as failed,
+		        COALESCE(SUM(CASE WHEN cr.opened_at IS NOT NULL THEN 1 ELSE 0 END), 0) as opened
+		 FROM campaign_recipients cr
+		 JOIN campaigns c ON cr.campaign_id = c.id
+		 WHERE cr.campaign_id = ? AND c.tenant_id = ?`, id, s.tenantID,
 	).Scan(&stats.Total, &stats.Queued, &stats.Sent, &stats.Failed, &stats.Opened)
 	if err != nil {
 		return nil, err
@@ -580,8 +582,9 @@ func (s *Store) GetCampaignRecipients(campaignID string) ([]CampaignRecipient, e
 		`SELECT cr.id, cr.campaign_id, cr.contact_id, c.email, c.name, cr.status, cr.error_message, cr.sent_at, cr.opened_at
 		 FROM campaign_recipients cr
 		 JOIN contacts c ON cr.contact_id = c.id
-		 WHERE cr.campaign_id = ?
-		 ORDER BY c.email`, campaignID,
+		 JOIN campaigns camp ON cr.campaign_id = camp.id
+		 WHERE cr.campaign_id = ? AND camp.tenant_id = ?
+		 ORDER BY c.email`, campaignID, s.tenantID,
 	)
 	if err != nil {
 		return nil, err
@@ -658,6 +661,9 @@ func (s *Store) PrepareCampaignRecipients(campaignID string) (int, error) {
 	return count, nil
 }
 
+// UpdateRecipientStatus updates a recipient's send status. Called from processCampaign
+// which already loaded the campaign with tenant scope, so tenant isolation is guaranteed
+// by the caller. UUID recipient IDs make cross-tenant guessing impractical.
 func (s *Store) UpdateRecipientStatus(recipientID, status, errorMsg string) error {
 	var sentAt interface{}
 	if status == "sent" {
@@ -671,6 +677,8 @@ func (s *Store) UpdateRecipientStatus(recipientID, status, errorMsg string) erro
 	return err
 }
 
+// RecordOpen records the first open time for a recipient. Called from a public
+// tracking endpoint. UUID recipient IDs make cross-tenant guessing impractical.
 func (s *Store) RecordOpen(recipientID string) error {
 	_, err := s.db.Exec(
 		"UPDATE campaign_recipients SET opened_at = ? WHERE id = ? AND opened_at IS NULL",
