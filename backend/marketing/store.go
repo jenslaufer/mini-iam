@@ -9,11 +9,22 @@ import (
 )
 
 type Store struct {
-	db *sql.DB
+	db       *sql.DB
+	tenantID string
 }
 
 func NewStore(db *sql.DB) *Store {
 	return &Store{db: db}
+}
+
+// ForTenant returns a copy of the store scoped to the given tenant.
+func (s *Store) ForTenant(tenantID string) *Store {
+	return &Store{db: s.db, tenantID: tenantID}
+}
+
+// TenantID returns the tenant scope of this store.
+func (s *Store) TenantID() string {
+	return s.tenantID
 }
 
 // --- Contacts ---
@@ -22,6 +33,7 @@ func (s *Store) CreateContact(email, name, consentSource string) (*Contact, erro
 	inviteToken := uuid.NewString()
 	c := &Contact{
 		ID:               uuid.NewString(),
+		TenantID:         s.tenantID,
 		Email:            email,
 		Name:             name,
 		UnsubscribeToken: uuid.NewString(),
@@ -32,9 +44,9 @@ func (s *Store) CreateContact(email, name, consentSource string) (*Contact, erro
 	}
 
 	_, err := s.db.Exec(
-		`INSERT INTO contacts (id, email, name, unsubscribe_token, invite_token, consent_source, consent_at, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		c.ID, c.Email, c.Name, c.UnsubscribeToken, c.InviteToken, c.ConsentSource, c.ConsentAt, c.CreatedAt,
+		`INSERT INTO contacts (id, tenant_id, email, name, unsubscribe_token, invite_token, consent_source, consent_at, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		c.ID, c.TenantID, c.Email, c.Name, c.UnsubscribeToken, c.InviteToken, c.ConsentSource, c.ConsentAt, c.CreatedAt,
 	)
 	if err != nil {
 		return nil, err
@@ -47,9 +59,9 @@ func (s *Store) GetContactByID(id string) (*Contact, error) {
 	var userID, inviteToken sql.NullString
 	var unsub int
 	err := s.db.QueryRow(
-		`SELECT id, email, name, user_id, unsubscribed, unsubscribe_token, invite_token, consent_source, consent_at, created_at
-		 FROM contacts WHERE id = ?`, id,
-	).Scan(&c.ID, &c.Email, &c.Name, &userID, &unsub, &c.UnsubscribeToken, &inviteToken, &c.ConsentSource, &c.ConsentAt, &c.CreatedAt)
+		`SELECT id, tenant_id, email, name, user_id, unsubscribed, unsubscribe_token, invite_token, consent_source, consent_at, created_at
+		 FROM contacts WHERE id = ? AND tenant_id = ?`, id, s.tenantID,
+	).Scan(&c.ID, &c.TenantID, &c.Email, &c.Name, &userID, &unsub, &c.UnsubscribeToken, &inviteToken, &c.ConsentSource, &c.ConsentAt, &c.CreatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -68,9 +80,9 @@ func (s *Store) GetContactByEmail(email string) (*Contact, error) {
 	var userID, inviteToken sql.NullString
 	var unsub int
 	err := s.db.QueryRow(
-		`SELECT id, email, name, user_id, unsubscribed, unsubscribe_token, invite_token, consent_source, consent_at, created_at
-		 FROM contacts WHERE email = ?`, email,
-	).Scan(&c.ID, &c.Email, &c.Name, &userID, &unsub, &c.UnsubscribeToken, &inviteToken, &c.ConsentSource, &c.ConsentAt, &c.CreatedAt)
+		`SELECT id, tenant_id, email, name, user_id, unsubscribed, unsubscribe_token, invite_token, consent_source, consent_at, created_at
+		 FROM contacts WHERE email = ? AND tenant_id = ?`, email, s.tenantID,
+	).Scan(&c.ID, &c.TenantID, &c.Email, &c.Name, &userID, &unsub, &c.UnsubscribeToken, &inviteToken, &c.ConsentSource, &c.ConsentAt, &c.CreatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -86,8 +98,8 @@ func (s *Store) GetContactByEmail(email string) (*Contact, error) {
 
 func (s *Store) ListContacts() ([]Contact, error) {
 	rows, err := s.db.Query(
-		`SELECT id, email, name, user_id, unsubscribed, consent_source, consent_at, created_at
-		 FROM contacts ORDER BY created_at DESC`,
+		`SELECT id, tenant_id, email, name, user_id, unsubscribed, consent_source, consent_at, created_at
+		 FROM contacts WHERE tenant_id = ? ORDER BY created_at DESC`, s.tenantID,
 	)
 	if err != nil {
 		return nil, err
@@ -99,7 +111,7 @@ func (s *Store) ListContacts() ([]Contact, error) {
 		var c Contact
 		var userID sql.NullString
 		var unsub int
-		if err := rows.Scan(&c.ID, &c.Email, &c.Name, &userID, &unsub, &c.ConsentSource, &c.ConsentAt, &c.CreatedAt); err != nil {
+		if err := rows.Scan(&c.ID, &c.TenantID, &c.Email, &c.Name, &userID, &unsub, &c.ConsentSource, &c.ConsentAt, &c.CreatedAt); err != nil {
 			return nil, err
 		}
 		c.Unsubscribed = unsub != 0
@@ -112,7 +124,7 @@ func (s *Store) ListContacts() ([]Contact, error) {
 }
 
 func (s *Store) DeleteContact(id string) error {
-	result, err := s.db.Exec("DELETE FROM contacts WHERE id = ?", id)
+	result, err := s.db.Exec("DELETE FROM contacts WHERE id = ? AND tenant_id = ?", id, s.tenantID)
 	if err != nil {
 		return err
 	}
@@ -124,7 +136,7 @@ func (s *Store) DeleteContact(id string) error {
 }
 
 func (s *Store) UnsubscribeContact(token string) error {
-	result, err := s.db.Exec("UPDATE contacts SET unsubscribed = 1 WHERE unsubscribe_token = ?", token)
+	result, err := s.db.Exec("UPDATE contacts SET unsubscribed = 1 WHERE unsubscribe_token = ? AND tenant_id = ?", token, s.tenantID)
 	if err != nil {
 		return err
 	}
@@ -143,8 +155,8 @@ func (s *Store) ImportContacts(contacts []ContactImport) (imported int, skipped 
 	defer tx.Rollback()
 
 	stmt, err := tx.Prepare(
-		`INSERT OR IGNORE INTO contacts (id, email, name, unsubscribe_token, invite_token, consent_source, consent_at, created_at)
-		 VALUES (?, ?, ?, ?, ?, 'import', ?, ?)`,
+		`INSERT OR IGNORE INTO contacts (id, tenant_id, email, name, unsubscribe_token, invite_token, consent_source, consent_at, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, 'import', ?, ?)`,
 	)
 	if err != nil {
 		return 0, 0, err
@@ -153,7 +165,7 @@ func (s *Store) ImportContacts(contacts []ContactImport) (imported int, skipped 
 
 	now := time.Now().UTC()
 	for _, c := range contacts {
-		result, err := stmt.Exec(uuid.NewString(), c.Email, c.Name, uuid.NewString(), uuid.NewString(), now, now)
+		result, err := stmt.Exec(uuid.NewString(), s.tenantID, c.Email, c.Name, uuid.NewString(), uuid.NewString(), now, now)
 		if err != nil {
 			return imported, skipped, err
 		}
@@ -176,9 +188,9 @@ func (s *Store) GetContactByUnsubscribeToken(token string) (*Contact, error) {
 	var userID, inviteToken sql.NullString
 	var unsub int
 	err := s.db.QueryRow(
-		`SELECT id, email, name, user_id, unsubscribed, unsubscribe_token, invite_token, consent_source, consent_at, created_at
-		 FROM contacts WHERE unsubscribe_token = ?`, token,
-	).Scan(&c.ID, &c.Email, &c.Name, &userID, &unsub, &c.UnsubscribeToken, &inviteToken, &c.ConsentSource, &c.ConsentAt, &c.CreatedAt)
+		`SELECT id, tenant_id, email, name, user_id, unsubscribed, unsubscribe_token, invite_token, consent_source, consent_at, created_at
+		 FROM contacts WHERE unsubscribe_token = ? AND tenant_id = ?`, token, s.tenantID,
+	).Scan(&c.ID, &c.TenantID, &c.Email, &c.Name, &userID, &unsub, &c.UnsubscribeToken, &inviteToken, &c.ConsentSource, &c.ConsentAt, &c.CreatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -213,13 +225,14 @@ func (s *Store) ListContactsWithSegments() ([]Contact, error) {
 func (s *Store) CreateSegment(name, description string) (*Segment, error) {
 	seg := &Segment{
 		ID:          uuid.NewString(),
+		TenantID:    s.tenantID,
 		Name:        name,
 		Description: description,
 		CreatedAt:   time.Now().UTC(),
 	}
 	_, err := s.db.Exec(
-		"INSERT INTO segments (id, name, description, created_at) VALUES (?, ?, ?, ?)",
-		seg.ID, seg.Name, seg.Description, seg.CreatedAt,
+		"INSERT INTO segments (id, tenant_id, name, description, created_at) VALUES (?, ?, ?, ?, ?)",
+		seg.ID, seg.TenantID, seg.Name, seg.Description, seg.CreatedAt,
 	)
 	if err != nil {
 		return nil, err
@@ -229,11 +242,12 @@ func (s *Store) CreateSegment(name, description string) (*Segment, error) {
 
 func (s *Store) ListSegments() ([]Segment, error) {
 	rows, err := s.db.Query(
-		`SELECT s.id, s.name, s.description, s.created_at, COUNT(cs.contact_id) as contact_count
+		`SELECT s.id, s.tenant_id, s.name, s.description, s.created_at, COUNT(cs.contact_id) as contact_count
 		 FROM segments s
 		 LEFT JOIN contact_segments cs ON s.id = cs.segment_id
+		 WHERE s.tenant_id = ?
 		 GROUP BY s.id
-		 ORDER BY s.created_at DESC`,
+		 ORDER BY s.created_at DESC`, s.tenantID,
 	)
 	if err != nil {
 		return nil, err
@@ -243,7 +257,7 @@ func (s *Store) ListSegments() ([]Segment, error) {
 	var segments []Segment
 	for rows.Next() {
 		var seg Segment
-		if err := rows.Scan(&seg.ID, &seg.Name, &seg.Description, &seg.CreatedAt, &seg.ContactCount); err != nil {
+		if err := rows.Scan(&seg.ID, &seg.TenantID, &seg.Name, &seg.Description, &seg.CreatedAt, &seg.ContactCount); err != nil {
 			return nil, err
 		}
 		segments = append(segments, seg)
@@ -254,12 +268,12 @@ func (s *Store) ListSegments() ([]Segment, error) {
 func (s *Store) GetSegmentByID(id string) (*Segment, error) {
 	seg := &Segment{}
 	err := s.db.QueryRow(
-		`SELECT s.id, s.name, s.description, s.created_at, COUNT(cs.contact_id) as contact_count
+		`SELECT s.id, s.tenant_id, s.name, s.description, s.created_at, COUNT(cs.contact_id) as contact_count
 		 FROM segments s
 		 LEFT JOIN contact_segments cs ON s.id = cs.segment_id
-		 WHERE s.id = ?
-		 GROUP BY s.id`, id,
-	).Scan(&seg.ID, &seg.Name, &seg.Description, &seg.CreatedAt, &seg.ContactCount)
+		 WHERE s.id = ? AND s.tenant_id = ?
+		 GROUP BY s.id`, id, s.tenantID,
+	).Scan(&seg.ID, &seg.TenantID, &seg.Name, &seg.Description, &seg.CreatedAt, &seg.ContactCount)
 	if err != nil {
 		return nil, err
 	}
@@ -268,8 +282,8 @@ func (s *Store) GetSegmentByID(id string) (*Segment, error) {
 
 func (s *Store) UpdateSegment(id, name, description string) (*Segment, error) {
 	result, err := s.db.Exec(
-		"UPDATE segments SET name = ?, description = ? WHERE id = ?",
-		name, description, id,
+		"UPDATE segments SET name = ?, description = ? WHERE id = ? AND tenant_id = ?",
+		name, description, id, s.tenantID,
 	)
 	if err != nil {
 		return nil, err
@@ -282,7 +296,7 @@ func (s *Store) UpdateSegment(id, name, description string) (*Segment, error) {
 }
 
 func (s *Store) DeleteSegment(id string) error {
-	result, err := s.db.Exec("DELETE FROM segments WHERE id = ?", id)
+	result, err := s.db.Exec("DELETE FROM segments WHERE id = ? AND tenant_id = ?", id, s.tenantID)
 	if err != nil {
 		return err
 	}
@@ -321,8 +335,8 @@ func (s *Store) GetSegmentContacts(segmentID string) ([]Contact, error) {
 		`SELECT c.id, c.email, c.name, c.unsubscribed, c.consent_source, c.consent_at, c.created_at
 		 FROM contacts c
 		 JOIN contact_segments cs ON c.id = cs.contact_id
-		 WHERE cs.segment_id = ?
-		 ORDER BY c.created_at DESC`, segmentID,
+		 WHERE cs.segment_id = ? AND c.tenant_id = ?
+		 ORDER BY c.created_at DESC`, segmentID, s.tenantID,
 	)
 	if err != nil {
 		return nil, err
@@ -347,8 +361,8 @@ func (s *Store) GetContactSegments(contactID string) ([]Segment, error) {
 		`SELECT s.id, s.name, s.description, s.created_at
 		 FROM segments s
 		 JOIN contact_segments cs ON s.id = cs.segment_id
-		 WHERE cs.contact_id = ?
-		 ORDER BY s.name`, contactID,
+		 WHERE cs.contact_id = ? AND s.tenant_id = ?
+		 ORDER BY s.name`, contactID, s.tenantID,
 	)
 	if err != nil {
 		return nil, err
@@ -371,6 +385,7 @@ func (s *Store) GetContactSegments(contactID string) ([]Segment, error) {
 func (s *Store) CreateCampaign(subject, htmlBody, fromName, fromEmail string, segmentIDs []string) (*Campaign, error) {
 	c := &Campaign{
 		ID:        uuid.NewString(),
+		TenantID:  s.tenantID,
 		Subject:   subject,
 		HTMLBody:  htmlBody,
 		FromName:  fromName,
@@ -386,9 +401,9 @@ func (s *Store) CreateCampaign(subject, htmlBody, fromName, fromEmail string, se
 	defer tx.Rollback()
 
 	_, err = tx.Exec(
-		`INSERT INTO campaigns (id, subject, html_body, from_name, from_email, status, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		c.ID, c.Subject, c.HTMLBody, c.FromName, c.FromEmail, c.Status, c.CreatedAt,
+		`INSERT INTO campaigns (id, tenant_id, subject, html_body, from_name, from_email, status, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		c.ID, c.TenantID, c.Subject, c.HTMLBody, c.FromName, c.FromEmail, c.Status, c.CreatedAt,
 	)
 	if err != nil {
 		return nil, err
@@ -422,8 +437,9 @@ func (s *Store) ListCampaigns() ([]CampaignSummary, error) {
 		        COALESCE(SUM(CASE WHEN cr.opened_at IS NOT NULL THEN 1 ELSE 0 END), 0) as opened
 		 FROM campaigns c
 		 LEFT JOIN campaign_recipients cr ON c.id = cr.campaign_id
+		 WHERE c.tenant_id = ?
 		 GROUP BY c.id
-		 ORDER BY c.created_at DESC`,
+		 ORDER BY c.created_at DESC`, s.tenantID,
 	)
 	if err != nil {
 		return nil, err
@@ -454,9 +470,9 @@ func (s *Store) GetCampaignByID(id string) (*Campaign, error) {
 	c := &Campaign{}
 	var sentAt sql.NullTime
 	err := s.db.QueryRow(
-		`SELECT id, subject, html_body, from_name, from_email, status, sent_at, created_at
-		 FROM campaigns WHERE id = ?`, id,
-	).Scan(&c.ID, &c.Subject, &c.HTMLBody, &c.FromName, &c.FromEmail, &c.Status, &sentAt, &c.CreatedAt)
+		`SELECT id, tenant_id, subject, html_body, from_name, from_email, status, sent_at, created_at
+		 FROM campaigns WHERE id = ? AND tenant_id = ?`, id, s.tenantID,
+	).Scan(&c.ID, &c.TenantID, &c.Subject, &c.HTMLBody, &c.FromName, &c.FromEmail, &c.Status, &sentAt, &c.CreatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -497,8 +513,8 @@ func (s *Store) UpdateCampaign(id, subject, htmlBody, fromName, fromEmail string
 	defer tx.Rollback()
 
 	_, err = tx.Exec(
-		`UPDATE campaigns SET subject = ?, html_body = ?, from_name = ?, from_email = ? WHERE id = ?`,
-		subject, htmlBody, fromName, fromEmail, id,
+		`UPDATE campaigns SET subject = ?, html_body = ?, from_name = ?, from_email = ? WHERE id = ? AND tenant_id = ?`,
+		subject, htmlBody, fromName, fromEmail, id, s.tenantID,
 	)
 	if err != nil {
 		return nil, err
@@ -539,7 +555,7 @@ func (s *Store) DeleteCampaign(id string) error {
 	if c.Status != "draft" {
 		return fmt.Errorf("can only delete draft campaigns")
 	}
-	_, err = s.db.Exec("DELETE FROM campaigns WHERE id = ?", id)
+	_, err = s.db.Exec("DELETE FROM campaigns WHERE id = ? AND tenant_id = ?", id, s.tenantID)
 	return err
 }
 
@@ -604,7 +620,7 @@ func (s *Store) PrepareCampaignRecipients(campaignID string) (int, error) {
 		 FROM contacts c
 		 JOIN contact_segments cs ON c.id = cs.contact_id
 		 JOIN campaign_segments csg ON cs.segment_id = csg.segment_id
-		 WHERE csg.campaign_id = ? AND c.unsubscribed = 0`, campaignID,
+		 WHERE csg.campaign_id = ? AND c.unsubscribed = 0 AND c.tenant_id = ?`, campaignID, s.tenantID,
 	)
 	if err != nil {
 		return 0, err
@@ -670,8 +686,8 @@ func (s *Store) SetCampaignStatus(id, status string) error {
 		query += ", sent_at = ?"
 		args = append(args, time.Now().UTC())
 	}
-	query += " WHERE id = ?"
-	args = append(args, id)
+	query += " WHERE id = ? AND tenant_id = ?"
+	args = append(args, id, s.tenantID)
 	_, err := s.db.Exec(query, args...)
 	return err
 }

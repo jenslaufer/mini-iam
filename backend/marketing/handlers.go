@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/jenslaufer/launch-kit/iam"
+	"github.com/jenslaufer/launch-kit/tenant"
 )
 
 type Handler struct {
@@ -24,6 +25,11 @@ func (h *Handler) SetSender(sender *CampaignSender) {
 	h.sender = sender
 }
 
+// tenantStore returns a marketing store scoped to the request's tenant.
+func (h *Handler) tenantStore(r *http.Request) *Store {
+	return h.store.ForTenant(tenant.FromContext(r.Context()))
+}
+
 func (h *Handler) requireAdmin(w http.ResponseWriter, r *http.Request) bool {
 	_, ok := iam.CheckAdmin(h.tokens, h.iamStore, w, r)
 	return ok
@@ -36,9 +42,11 @@ func (h *Handler) AdminContacts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	store := h.tenantStore(r)
+
 	switch r.Method {
 	case http.MethodGet:
-		contacts, err := h.store.ListContactsWithSegments()
+		contacts, err := store.ListContactsWithSegments()
 		if err != nil {
 			iam.WriteError(w, http.StatusInternalServerError, "server_error", "failed to list contacts")
 			return
@@ -58,7 +66,7 @@ func (h *Handler) AdminContacts(w http.ResponseWriter, r *http.Request) {
 			iam.WriteError(w, http.StatusBadRequest, "invalid_request", "invalid email format")
 			return
 		}
-		contact, err := h.store.CreateContact(req.Email, req.Name, "api")
+		contact, err := store.CreateContact(req.Email, req.Name, "api")
 		if err != nil {
 			if strings.Contains(err.Error(), "UNIQUE") {
 				iam.WriteError(w, http.StatusConflict, "invalid_request", "email already exists")
@@ -101,19 +109,21 @@ func (h *Handler) AdminContactByID(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	store := h.tenantStore(r)
+
 	switch r.Method {
 	case http.MethodGet:
-		contact, err := h.store.GetContactByID(id)
+		contact, err := store.GetContactByID(id)
 		if err != nil {
 			iam.WriteError(w, http.StatusNotFound, "not_found", "contact not found")
 			return
 		}
-		segs, _ := h.store.GetContactSegments(id)
+		segs, _ := store.GetContactSegments(id)
 		contact.Segments = segs
 		iam.WriteJSON(w, http.StatusOK, contact)
 
 	case http.MethodDelete:
-		if err := h.store.DeleteContact(id); err != nil {
+		if err := store.DeleteContact(id); err != nil {
 			iam.WriteError(w, http.StatusNotFound, "not_found", err.Error())
 			return
 		}
@@ -139,7 +149,8 @@ func (h *Handler) AdminImportContacts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	imported, skipped, err := h.store.ImportContacts(contacts)
+	store := h.tenantStore(r)
+	imported, skipped, err := store.ImportContacts(contacts)
 	if err != nil {
 		iam.WriteError(w, http.StatusInternalServerError, "server_error", "import failed")
 		return
@@ -148,16 +159,16 @@ func (h *Handler) AdminImportContacts(w http.ResponseWriter, r *http.Request) {
 	// Add contacts to segments if specified
 	for _, ci := range contacts {
 		if len(ci.Segments) > 0 {
-			contact, err := h.store.GetContactByEmail(ci.Email)
+			contact, err := store.GetContactByEmail(ci.Email)
 			if err != nil {
 				continue
 			}
 			for _, segName := range ci.Segments {
 				// Find segment by name, create if not exists
-				segs, _ := h.store.ListSegments()
+				segs, _ := store.ListSegments()
 				for _, seg := range segs {
 					if seg.Name == segName {
-						h.store.AddContactToSegment(contact.ID, seg.ID)
+						store.AddContactToSegment(contact.ID, seg.ID)
 						break
 					}
 				}
@@ -178,9 +189,11 @@ func (h *Handler) AdminSegments(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	store := h.tenantStore(r)
+
 	switch r.Method {
 	case http.MethodGet:
-		segments, err := h.store.ListSegments()
+		segments, err := store.ListSegments()
 		if err != nil {
 			iam.WriteError(w, http.StatusInternalServerError, "server_error", "failed to list segments")
 			return
@@ -200,7 +213,7 @@ func (h *Handler) AdminSegments(w http.ResponseWriter, r *http.Request) {
 			iam.WriteError(w, http.StatusBadRequest, "invalid_request", "name required")
 			return
 		}
-		seg, err := h.store.CreateSegment(req.Name, req.Description)
+		seg, err := store.CreateSegment(req.Name, req.Description)
 		if err != nil {
 			if strings.Contains(err.Error(), "UNIQUE") {
 				iam.WriteError(w, http.StatusConflict, "invalid_request", "segment name already exists")
@@ -231,6 +244,8 @@ func (h *Handler) AdminSegmentByID(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	store := h.tenantStore(r)
+
 	// /admin/segments/{id}/contacts/{contact_id}
 	if len(parts) == 3 && parts[1] == "contacts" {
 		contactID := parts[2]
@@ -238,7 +253,7 @@ func (h *Handler) AdminSegmentByID(w http.ResponseWriter, r *http.Request) {
 			iam.WriteError(w, http.StatusMethodNotAllowed, "invalid_request", "method not allowed")
 			return
 		}
-		if err := h.store.RemoveContactFromSegment(contactID, segmentID); err != nil {
+		if err := store.RemoveContactFromSegment(contactID, segmentID); err != nil {
 			iam.WriteError(w, http.StatusNotFound, "not_found", err.Error())
 			return
 		}
@@ -263,7 +278,7 @@ func (h *Handler) AdminSegmentByID(w http.ResponseWriter, r *http.Request) {
 			iam.WriteError(w, http.StatusBadRequest, "invalid_request", "contact_id required")
 			return
 		}
-		if err := h.store.AddContactToSegment(req.ContactID, segmentID); err != nil {
+		if err := store.AddContactToSegment(req.ContactID, segmentID); err != nil {
 			iam.WriteError(w, http.StatusInternalServerError, "server_error", "failed to add contact to segment")
 			return
 		}
@@ -274,12 +289,12 @@ func (h *Handler) AdminSegmentByID(w http.ResponseWriter, r *http.Request) {
 	// /admin/segments/{id}
 	switch r.Method {
 	case http.MethodGet:
-		seg, err := h.store.GetSegmentByID(segmentID)
+		seg, err := store.GetSegmentByID(segmentID)
 		if err != nil {
 			iam.WriteError(w, http.StatusNotFound, "not_found", "segment not found")
 			return
 		}
-		contacts, err := h.store.GetSegmentContacts(segmentID)
+		contacts, err := store.GetSegmentContacts(segmentID)
 		if err != nil {
 			iam.WriteError(w, http.StatusInternalServerError, "server_error", "failed to get segment contacts")
 			return
@@ -302,7 +317,7 @@ func (h *Handler) AdminSegmentByID(w http.ResponseWriter, r *http.Request) {
 			iam.WriteError(w, http.StatusBadRequest, "invalid_request", "name required")
 			return
 		}
-		seg, err := h.store.UpdateSegment(segmentID, req.Name, req.Description)
+		seg, err := store.UpdateSegment(segmentID, req.Name, req.Description)
 		if err != nil {
 			iam.WriteError(w, http.StatusNotFound, "not_found", err.Error())
 			return
@@ -310,7 +325,7 @@ func (h *Handler) AdminSegmentByID(w http.ResponseWriter, r *http.Request) {
 		iam.WriteJSON(w, http.StatusOK, seg)
 
 	case http.MethodDelete:
-		if err := h.store.DeleteSegment(segmentID); err != nil {
+		if err := store.DeleteSegment(segmentID); err != nil {
 			iam.WriteError(w, http.StatusNotFound, "not_found", err.Error())
 			return
 		}
@@ -328,9 +343,11 @@ func (h *Handler) AdminCampaigns(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	store := h.tenantStore(r)
+
 	switch r.Method {
 	case http.MethodGet:
-		campaigns, err := h.store.ListCampaigns()
+		campaigns, err := store.ListCampaigns()
 		if err != nil {
 			iam.WriteError(w, http.StatusInternalServerError, "server_error", "failed to list campaigns")
 			return
@@ -357,7 +374,7 @@ func (h *Handler) AdminCampaigns(w http.ResponseWriter, r *http.Request) {
 			iam.WriteError(w, http.StatusBadRequest, "invalid_request", "html_body required")
 			return
 		}
-		campaign, err := h.store.CreateCampaign(req.Subject, req.HTMLBody, req.FromName, req.FromEmail, req.SegmentIDs)
+		campaign, err := store.CreateCampaign(req.Subject, req.HTMLBody, req.FromName, req.FromEmail, req.SegmentIDs)
 		if err != nil {
 			iam.WriteError(w, http.StatusInternalServerError, "server_error", "failed to create campaign")
 			return
@@ -383,13 +400,15 @@ func (h *Handler) AdminCampaignByID(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	store := h.tenantStore(r)
+
 	// /admin/campaigns/{id}/send
 	if len(parts) == 2 && parts[1] == "send" {
 		if r.Method != http.MethodPost {
 			iam.WriteError(w, http.StatusMethodNotAllowed, "invalid_request", "method not allowed")
 			return
 		}
-		campaign, err := h.store.GetCampaignByID(campaignID)
+		campaign, err := store.GetCampaignByID(campaignID)
 		if err != nil {
 			iam.WriteError(w, http.StatusNotFound, "not_found", "campaign not found")
 			return
@@ -402,7 +421,7 @@ func (h *Handler) AdminCampaignByID(w http.ResponseWriter, r *http.Request) {
 			iam.WriteError(w, http.StatusInternalServerError, "server_error", "email sender not configured")
 			return
 		}
-		h.sender.Enqueue(campaignID)
+		h.sender.Enqueue(campaignID, tenant.FromContext(r.Context()))
 		iam.WriteJSON(w, http.StatusAccepted, map[string]string{"status": "sending"})
 		return
 	}
@@ -413,7 +432,7 @@ func (h *Handler) AdminCampaignByID(w http.ResponseWriter, r *http.Request) {
 			iam.WriteError(w, http.StatusMethodNotAllowed, "invalid_request", "method not allowed")
 			return
 		}
-		stats, err := h.store.GetCampaignStats(campaignID)
+		stats, err := store.GetCampaignStats(campaignID)
 		if err != nil {
 			iam.WriteError(w, http.StatusNotFound, "not_found", "campaign not found")
 			return
@@ -425,12 +444,12 @@ func (h *Handler) AdminCampaignByID(w http.ResponseWriter, r *http.Request) {
 	// /admin/campaigns/{id}
 	switch r.Method {
 	case http.MethodGet:
-		campaign, err := h.store.GetCampaignByID(campaignID)
+		campaign, err := store.GetCampaignByID(campaignID)
 		if err != nil {
 			iam.WriteError(w, http.StatusNotFound, "not_found", "campaign not found")
 			return
 		}
-		stats, _ := h.store.GetCampaignStats(campaignID)
+		stats, _ := store.GetCampaignStats(campaignID)
 		iam.WriteJSON(w, http.StatusOK, map[string]interface{}{
 			"campaign": campaign,
 			"stats":    stats,
@@ -448,7 +467,7 @@ func (h *Handler) AdminCampaignByID(w http.ResponseWriter, r *http.Request) {
 			iam.WriteError(w, http.StatusBadRequest, "invalid_request", "invalid JSON body")
 			return
 		}
-		campaign, err := h.store.UpdateCampaign(campaignID, req.Subject, req.HTMLBody, req.FromName, req.FromEmail, req.SegmentIDs)
+		campaign, err := store.UpdateCampaign(campaignID, req.Subject, req.HTMLBody, req.FromName, req.FromEmail, req.SegmentIDs)
 		if err != nil {
 			if strings.Contains(err.Error(), "draft") {
 				iam.WriteError(w, http.StatusBadRequest, "invalid_request", err.Error())
@@ -460,7 +479,7 @@ func (h *Handler) AdminCampaignByID(w http.ResponseWriter, r *http.Request) {
 		iam.WriteJSON(w, http.StatusOK, campaign)
 
 	case http.MethodDelete:
-		if err := h.store.DeleteCampaign(campaignID); err != nil {
+		if err := store.DeleteCampaign(campaignID); err != nil {
 			if strings.Contains(err.Error(), "draft") {
 				iam.WriteError(w, http.StatusBadRequest, "invalid_request", err.Error())
 				return
@@ -489,7 +508,8 @@ var trackingPixel = []byte{
 func (h *Handler) TrackOpen(w http.ResponseWriter, r *http.Request) {
 	recipientID := strings.TrimPrefix(r.URL.Path, "/track/")
 	if recipientID != "" {
-		h.store.RecordOpen(recipientID)
+		store := h.tenantStore(r)
+		store.RecordOpen(recipientID)
 	}
 	w.Header().Set("Content-Type", "image/gif")
 	w.Header().Set("Cache-Control", "no-store, no-cache, must-revalidate")
@@ -503,9 +523,11 @@ func (h *Handler) Unsubscribe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	store := h.tenantStore(r)
+
 	switch r.Method {
 	case http.MethodGet:
-		contact, err := h.store.GetContactByUnsubscribeToken(token)
+		contact, err := store.GetContactByUnsubscribeToken(token)
 		if err != nil {
 			w.Header().Set("Content-Type", "text/html")
 			w.WriteHeader(http.StatusNotFound)
@@ -523,7 +545,7 @@ func (h *Handler) Unsubscribe(w http.ResponseWriter, r *http.Request) {
 </div></body></html>`, escapeHTML(contact.Email))
 
 	case http.MethodPost:
-		if err := h.store.UnsubscribeContact(token); err != nil {
+		if err := store.UnsubscribeContact(token); err != nil {
 			w.Header().Set("Content-Type", "text/html")
 			w.WriteHeader(http.StatusNotFound)
 			w.Write([]byte(`<!DOCTYPE html><html><body><p>Invalid unsubscribe link.</p></body></html>`))

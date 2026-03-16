@@ -21,7 +21,7 @@ func TestCreateAccessToken(t *testing.T) {
 	ts := newTestTokenService(t)
 	user := &User{ID: "u1", Email: "test@example.com", Name: "Test", Role: "user"}
 
-	token, err := ts.CreateAccessToken(user, "test-audience")
+	token, err := ts.CreateAccessToken(user, "test-audience", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -34,7 +34,7 @@ func TestValidateAccessToken(t *testing.T) {
 	ts := newTestTokenService(t)
 	user := &User{ID: "u1", Email: "test@example.com", Name: "Test", Role: "admin"}
 
-	token, _ := ts.CreateAccessToken(user, "aud")
+	token, _ := ts.CreateAccessToken(user, "aud", "")
 	claims, err := ts.ValidateAccessToken(token)
 	if err != nil {
 		t.Fatal(err)
@@ -67,7 +67,7 @@ func TestValidateAccessTokenWrongKey(t *testing.T) {
 	ts2 := newTestTokenService(t)
 
 	user := &User{ID: "u1", Email: "test@example.com", Name: "Test", Role: "user"}
-	token, _ := ts1.CreateAccessToken(user, "aud")
+	token, _ := ts1.CreateAccessToken(user, "aud", "")
 
 	_, err := ts2.ValidateAccessToken(token)
 	if err == nil {
@@ -79,7 +79,7 @@ func TestCreateIDToken(t *testing.T) {
 	ts := newTestTokenService(t)
 	user := &User{ID: "u1", Email: "test@example.com", Name: "Test", Role: "user"}
 
-	token, err := ts.CreateIDToken(user, "aud", "nonce123")
+	token, err := ts.CreateIDToken(user, "aud", "nonce123", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -97,7 +97,7 @@ func TestCreateIDTokenWithoutNonce(t *testing.T) {
 	ts := newTestTokenService(t)
 	user := &User{ID: "u1", Email: "test@example.com", Name: "Test", Role: "user"}
 
-	token, _ := ts.CreateIDToken(user, "aud", "")
+	token, _ := ts.CreateIDToken(user, "aud", "", "")
 	claims, _ := ts.ValidateAccessToken(token)
 	if _, ok := claims["nonce"]; ok {
 		t.Error("nonce should not be present when empty")

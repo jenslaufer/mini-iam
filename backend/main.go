@@ -2,14 +2,17 @@ package main
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 
 	"github.com/jenslaufer/launch-kit/iam"
 	"github.com/jenslaufer/launch-kit/marketing"
+	"github.com/jenslaufer/launch-kit/tenant"
 	_ "modernc.org/sqlite"
 )
 
@@ -19,6 +22,7 @@ func main() {
 	corsOrigins := envOr("CORS_ORIGINS", "*")
 	adminEmail := os.Getenv("ADMIN_EMAIL")
 	adminPassword := os.Getenv("ADMIN_PASSWORD")
+	defaultTenantSlug := os.Getenv("DEFAULT_TENANT")
 
 	db, err := openDB(envOr("DATABASE_PATH", "launch-kit.db"))
 	if err != nil {
@@ -26,11 +30,28 @@ func main() {
 	}
 	defer db.Close()
 
+	tenantStore := tenant.NewStore(db)
 	iamStore := iam.NewStore(db)
 	marketingStore := marketing.NewStore(db)
 
+	// Resolve default tenant
+	var defaultTenantID string
+	if defaultTenantSlug != "" {
+		t, err := tenantStore.GetBySlug(defaultTenantSlug)
+		if err != nil {
+			t, err = tenantStore.Create(defaultTenantSlug, defaultTenantSlug)
+			if err != nil {
+				log.Fatalf("Failed to create default tenant: %v", err)
+			}
+			log.Printf("Default tenant created: %s (id: %s)", defaultTenantSlug, t.ID)
+		}
+		defaultTenantID = t.ID
+	}
+
+	// Seed admin into default tenant scope
+	scopedIAM := iamStore.ForTenant(defaultTenantID)
 	if adminEmail != "" && adminPassword != "" {
-		if err := iamStore.SeedAdmin(adminEmail, adminPassword, "Admin"); err != nil {
+		if err := scopedIAM.SeedAdmin(adminEmail, adminPassword, "Admin"); err != nil {
 			log.Fatalf("Failed to seed admin: %v", err)
 		}
 		log.Printf("Admin account seeded: %s", adminEmail)
@@ -45,7 +66,7 @@ func main() {
 	smtpFromName := envOr("SMTP_FROM_NAME", "launch-kit")
 	smtpRateMS, _ := strconv.Atoi(envOr("SMTP_RATE_MS", "100"))
 
-	rsaKey, err := iamStore.LoadOrCreateRSAKey()
+	rsaKey, err := scopedIAM.LoadOrCreateRSAKey()
 	if err != nil {
 		log.Fatalf("Failed to load/create RSA key: %v", err)
 	}
@@ -107,7 +128,79 @@ func main() {
 	mux.HandleFunc("/track/", marketingHandler.TrackOpen)
 	mux.HandleFunc("/unsubscribe/", marketingHandler.Unsubscribe)
 
-	handler := CORSMiddleware(corsOrigins)(mux)
+	// Tenant management API (admin-protected)
+	mux.HandleFunc("/admin/tenants", func(w http.ResponseWriter, r *http.Request) {
+		if _, ok := iam.CheckAdmin(tokenService, iamStore, w, r); !ok {
+			return
+		}
+		switch r.Method {
+		case http.MethodGet:
+			tenants, err := tenantStore.List()
+			if err != nil {
+				iam.WriteError(w, http.StatusInternalServerError, "server_error", "failed to list tenants")
+				return
+			}
+			iam.WriteJSON(w, http.StatusOK, tenants)
+		case http.MethodPost:
+			var req struct {
+				Slug string `json:"slug"`
+				Name string `json:"name"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				iam.WriteError(w, http.StatusBadRequest, "invalid_request", "invalid JSON body")
+				return
+			}
+			if req.Slug == "" {
+				iam.WriteError(w, http.StatusBadRequest, "invalid_request", "slug required")
+				return
+			}
+			if req.Name == "" {
+				req.Name = req.Slug
+			}
+			t, err := tenantStore.Create(req.Slug, req.Name)
+			if err != nil {
+				if strings.Contains(err.Error(), "UNIQUE") {
+					iam.WriteError(w, http.StatusConflict, "invalid_request", "tenant slug already exists")
+					return
+				}
+				iam.WriteError(w, http.StatusInternalServerError, "server_error", "failed to create tenant")
+				return
+			}
+			iam.WriteJSON(w, http.StatusCreated, t)
+		default:
+			iam.WriteError(w, http.StatusMethodNotAllowed, "invalid_request", "method not allowed")
+		}
+	})
+	mux.HandleFunc("/admin/tenants/", func(w http.ResponseWriter, r *http.Request) {
+		if _, ok := iam.CheckAdmin(tokenService, iamStore, w, r); !ok {
+			return
+		}
+		id := strings.TrimPrefix(r.URL.Path, "/admin/tenants/")
+		if id == "" {
+			iam.WriteError(w, http.StatusBadRequest, "invalid_request", "tenant id required")
+			return
+		}
+		switch r.Method {
+		case http.MethodGet:
+			t, err := tenantStore.GetByID(id)
+			if err != nil {
+				iam.WriteError(w, http.StatusNotFound, "not_found", "tenant not found")
+				return
+			}
+			iam.WriteJSON(w, http.StatusOK, t)
+		case http.MethodDelete:
+			if err := tenantStore.Delete(id); err != nil {
+				iam.WriteError(w, http.StatusNotFound, "not_found", "tenant not found")
+				return
+			}
+			iam.WriteJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+		default:
+			iam.WriteError(w, http.StatusMethodNotAllowed, "invalid_request", "method not allowed")
+		}
+	})
+
+	// Wrap with tenant middleware, then CORS
+	handler := CORSMiddleware(corsOrigins)(tenant.Middleware(tenantStore, defaultTenantID)(mux))
 
 	log.Printf("launch-kit starting on :%s (issuer: %s)", port, issuer)
 	if err := http.ListenAndServe(":"+port, handler); err != nil {
@@ -146,17 +239,27 @@ func openDB(dbPath string) (*sql.DB, error) {
 
 func migrate(db *sql.DB) error {
 	schema := `
+	CREATE TABLE IF NOT EXISTS tenants (
+		id TEXT PRIMARY KEY,
+		slug TEXT UNIQUE NOT NULL,
+		name TEXT NOT NULL,
+		created_at DATETIME NOT NULL
+	);
+
 	CREATE TABLE IF NOT EXISTS users (
 		id TEXT PRIMARY KEY,
-		email TEXT UNIQUE NOT NULL,
+		tenant_id TEXT NOT NULL DEFAULT '',
+		email TEXT NOT NULL,
 		password_hash TEXT NOT NULL,
 		name TEXT NOT NULL,
 		role TEXT NOT NULL DEFAULT 'user',
-		created_at DATETIME NOT NULL
+		created_at DATETIME NOT NULL,
+		UNIQUE(tenant_id, email)
 	);
 
 	CREATE TABLE IF NOT EXISTS clients (
 		id TEXT PRIMARY KEY,
+		tenant_id TEXT NOT NULL DEFAULT '',
 		secret_hash TEXT NOT NULL,
 		name TEXT NOT NULL,
 		redirect_uris TEXT NOT NULL,
@@ -165,6 +268,7 @@ func migrate(db *sql.DB) error {
 
 	CREATE TABLE IF NOT EXISTS auth_codes (
 		code TEXT PRIMARY KEY,
+		tenant_id TEXT NOT NULL DEFAULT '',
 		client_id TEXT NOT NULL,
 		user_id TEXT NOT NULL,
 		redirect_uri TEXT NOT NULL,
@@ -178,6 +282,7 @@ func migrate(db *sql.DB) error {
 
 	CREATE TABLE IF NOT EXISTS refresh_tokens (
 		token TEXT PRIMARY KEY,
+		tenant_id TEXT NOT NULL DEFAULT '',
 		client_id TEXT NOT NULL,
 		user_id TEXT NOT NULL,
 		scope TEXT NOT NULL DEFAULT '',
@@ -187,13 +292,15 @@ func migrate(db *sql.DB) error {
 
 	CREATE TABLE IF NOT EXISTS keys (
 		id TEXT PRIMARY KEY,
+		tenant_id TEXT NOT NULL DEFAULT '',
 		private_key_pem TEXT NOT NULL,
 		created_at DATETIME NOT NULL
 	);
 
 	CREATE TABLE IF NOT EXISTS contacts (
 		id TEXT PRIMARY KEY,
-		email TEXT UNIQUE NOT NULL,
+		tenant_id TEXT NOT NULL DEFAULT '',
+		email TEXT NOT NULL,
 		name TEXT NOT NULL DEFAULT '',
 		user_id TEXT REFERENCES users(id),
 		unsubscribed INTEGER NOT NULL DEFAULT 0,
@@ -201,14 +308,17 @@ func migrate(db *sql.DB) error {
 		invite_token TEXT UNIQUE,
 		consent_source TEXT NOT NULL,
 		consent_at DATETIME NOT NULL,
-		created_at DATETIME NOT NULL
+		created_at DATETIME NOT NULL,
+		UNIQUE(tenant_id, email)
 	);
 
 	CREATE TABLE IF NOT EXISTS segments (
 		id TEXT PRIMARY KEY,
-		name TEXT UNIQUE NOT NULL,
+		tenant_id TEXT NOT NULL DEFAULT '',
+		name TEXT NOT NULL,
 		description TEXT NOT NULL DEFAULT '',
-		created_at DATETIME NOT NULL
+		created_at DATETIME NOT NULL,
+		UNIQUE(tenant_id, name)
 	);
 
 	CREATE TABLE IF NOT EXISTS contact_segments (
@@ -219,6 +329,7 @@ func migrate(db *sql.DB) error {
 
 	CREATE TABLE IF NOT EXISTS campaigns (
 		id TEXT PRIMARY KEY,
+		tenant_id TEXT NOT NULL DEFAULT '',
 		subject TEXT NOT NULL,
 		html_body TEXT NOT NULL,
 		from_name TEXT NOT NULL DEFAULT '',
@@ -250,11 +361,17 @@ func migrate(db *sql.DB) error {
 		return err
 	}
 
-	// Add role column if missing (existing databases)
+	// Add columns for existing databases (safe to call multiple times)
 	db.Exec("ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'user'")
-
-	// Add invite_token column if missing (existing databases)
+	db.Exec("ALTER TABLE users ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''")
 	db.Exec("ALTER TABLE contacts ADD COLUMN invite_token TEXT UNIQUE")
+	db.Exec("ALTER TABLE contacts ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''")
+	db.Exec("ALTER TABLE clients ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''")
+	db.Exec("ALTER TABLE auth_codes ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''")
+	db.Exec("ALTER TABLE refresh_tokens ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''")
+	db.Exec("ALTER TABLE keys ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''")
+	db.Exec("ALTER TABLE segments ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''")
+	db.Exec("ALTER TABLE campaigns ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''")
 
 	return nil
 }

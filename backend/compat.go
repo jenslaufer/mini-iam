@@ -46,6 +46,11 @@ func NewStore(dbPath string) (*Store, error) {
 	return &Store{Store: iamStore, mkt: mktStore}, nil
 }
 
+// ForTenant returns a Store scoped to the given tenant.
+func (s *Store) ForTenant(tenantID string) *Store {
+	return &Store{Store: s.Store.ForTenant(tenantID), mkt: s.mkt.ForTenant(tenantID)}
+}
+
 // Marketing methods delegated to the marketing store
 func (s *Store) GetContactByEmail(email string) (*marketing.Contact, error) {
 	return s.mkt.GetContactByEmail(email)

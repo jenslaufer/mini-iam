@@ -28,10 +28,11 @@ func newHandlerEnv(t *testing.T) *testEnv {
 
 	// Add contacts table for activate tests
 	db.Exec(`CREATE TABLE IF NOT EXISTS contacts (
-		id TEXT PRIMARY KEY, email TEXT UNIQUE NOT NULL, name TEXT NOT NULL DEFAULT '',
+		id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL DEFAULT '', email TEXT NOT NULL, name TEXT NOT NULL DEFAULT '',
 		user_id TEXT REFERENCES users(id), unsubscribed INTEGER NOT NULL DEFAULT 0,
 		unsubscribe_token TEXT UNIQUE NOT NULL, invite_token TEXT UNIQUE,
-		consent_source TEXT NOT NULL, consent_at DATETIME NOT NULL, created_at DATETIME NOT NULL
+		consent_source TEXT NOT NULL, consent_at DATETIME NOT NULL, created_at DATETIME NOT NULL,
+		UNIQUE(tenant_id, email)
 	)`)
 
 	store := NewStore(db)

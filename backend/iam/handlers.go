@@ -7,6 +7,8 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+
+	"github.com/jenslaufer/launch-kit/tenant"
 )
 
 type Handler struct {
@@ -17,6 +19,11 @@ type Handler struct {
 
 func NewHandler(store *Store, tokens *TokenService, issuer string) *Handler {
 	return &Handler{Store: store, Tokens: tokens, Issuer: issuer}
+}
+
+// tenantStore returns a store scoped to the request's tenant.
+func (h *Handler) tenantStore(r *http.Request) *Store {
+	return h.Store.ForTenant(tenant.FromContext(r.Context()))
 }
 
 // --- Helpers ---
@@ -68,7 +75,8 @@ func (h *Handler) Register(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	user, err := h.Store.CreateUser(req.Email, req.Password, req.Name)
+	store := h.tenantStore(r)
+	user, err := store.CreateUser(req.Email, req.Password, req.Name)
 	if err != nil {
 		if strings.Contains(err.Error(), "UNIQUE") {
 			WriteError(w, http.StatusConflict, "invalid_request", "email already registered")
@@ -96,25 +104,27 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	user, err := h.Store.AuthenticateUser(req.Email, req.Password)
+	store := h.tenantStore(r)
+	user, err := store.AuthenticateUser(req.Email, req.Password)
 	if err != nil {
 		WriteError(w, http.StatusUnauthorized, "invalid_grant", "invalid credentials")
 		return
 	}
 
-	accessToken, err := h.Tokens.CreateAccessToken(user, h.Issuer)
+	tenantID := tenant.FromContext(r.Context())
+	accessToken, err := h.Tokens.CreateAccessToken(user, h.Issuer, tenantID)
 	if err != nil {
 		WriteError(w, http.StatusInternalServerError, "server_error", "failed to create access token")
 		return
 	}
 
-	idToken, err := h.Tokens.CreateIDToken(user, h.Issuer, "")
+	idToken, err := h.Tokens.CreateIDToken(user, h.Issuer, "", tenantID)
 	if err != nil {
 		WriteError(w, http.StatusInternalServerError, "server_error", "failed to create id token")
 		return
 	}
 
-	refreshToken, err := h.Store.CreateRefreshToken("", user.ID, "openid profile email")
+	refreshToken, err := store.CreateRefreshToken("", user.ID, "openid profile email")
 	if err != nil {
 		WriteError(w, http.StatusInternalServerError, "server_error", "failed to create refresh token")
 		return
@@ -195,8 +205,10 @@ func (h *Handler) AuthorizePOST(w http.ResponseWriter, r *http.Request) {
 	codeChallenge := r.FormValue("code_challenge")
 	codeChallengeMethod := r.FormValue("code_challenge_method")
 
+	store := h.tenantStore(r)
+
 	// Validate client
-	client, err := h.Store.GetClient(clientID)
+	client, err := store.GetClient(clientID)
 	if err != nil {
 		WriteError(w, http.StatusBadRequest, "invalid_request", "unknown client_id")
 		return
@@ -209,7 +221,7 @@ func (h *Handler) AuthorizePOST(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Authenticate user
-	user, err := h.Store.AuthenticateUser(email, password)
+	user, err := store.AuthenticateUser(email, password)
 	if err != nil {
 		// Re-render login form with error (minimal approach: redirect back)
 		w.Header().Set("Content-Type", "text/html")
@@ -219,7 +231,7 @@ func (h *Handler) AuthorizePOST(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Generate auth code
-	code, err := h.Store.CreateAuthCode(clientID, user.ID, redirectURI, scope, nonce, codeChallenge, codeChallengeMethod)
+	code, err := store.CreateAuthCode(clientID, user.ID, redirectURI, scope, nonce, codeChallenge, codeChallengeMethod)
 	if err != nil {
 		WriteError(w, http.StatusInternalServerError, "server_error", "failed to create authorization code")
 		return
@@ -277,7 +289,8 @@ func (h *Handler) tokenAuthorizationCode(w http.ResponseWriter, r *http.Request)
 	clientID := r.FormValue("client_id")
 	clientSecret := r.FormValue("client_secret")
 
-	ac, err := h.Store.ConsumeAuthCode(code)
+	store := h.tenantStore(r)
+	ac, err := store.ConsumeAuthCode(code)
 	if err != nil {
 		WriteError(w, http.StatusBadRequest, "invalid_grant", err.Error())
 		return
@@ -307,36 +320,37 @@ func (h *Handler) tokenAuthorizationCode(w http.ResponseWriter, r *http.Request)
 		}
 	} else if clientSecret != "" {
 		// Confidential client: verify client secret
-		client, err := h.Store.GetClient(ac.ClientID)
+		client, err := store.GetClient(ac.ClientID)
 		if err != nil {
 			WriteError(w, http.StatusBadRequest, "invalid_grant", "unknown client")
 			return
 		}
-		if !h.Store.ValidateClientSecret(client, clientSecret) {
+		if !store.ValidateClientSecret(client, clientSecret) {
 			WriteError(w, http.StatusUnauthorized, "invalid_client", "invalid client credentials")
 			return
 		}
 	}
 
-	user, err := h.Store.GetUserByID(ac.UserID)
+	user, err := store.GetUserByID(ac.UserID)
 	if err != nil {
 		WriteError(w, http.StatusInternalServerError, "server_error", "user not found")
 		return
 	}
 
-	accessToken, err := h.Tokens.CreateAccessToken(user, ac.ClientID)
+	tenantID := tenant.FromContext(r.Context())
+	accessToken, err := h.Tokens.CreateAccessToken(user, ac.ClientID, tenantID)
 	if err != nil {
 		WriteError(w, http.StatusInternalServerError, "server_error", "failed to create access token")
 		return
 	}
 
-	idToken, err := h.Tokens.CreateIDToken(user, ac.ClientID, ac.Nonce)
+	idToken, err := h.Tokens.CreateIDToken(user, ac.ClientID, ac.Nonce, tenantID)
 	if err != nil {
 		WriteError(w, http.StatusInternalServerError, "server_error", "failed to create id token")
 		return
 	}
 
-	refreshToken, err := h.Store.CreateRefreshToken(ac.ClientID, user.ID, ac.Scope)
+	refreshToken, err := store.CreateRefreshToken(ac.ClientID, user.ID, ac.Scope)
 	if err != nil {
 		WriteError(w, http.StatusInternalServerError, "server_error", "failed to create refresh token")
 		return
@@ -358,16 +372,17 @@ func (h *Handler) tokenRefreshToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rt, err := h.Store.ValidateRefreshToken(token)
+	store := h.tenantStore(r)
+	rt, err := store.ValidateRefreshToken(token)
 	if err != nil {
 		WriteError(w, http.StatusBadRequest, "invalid_grant", err.Error())
 		return
 	}
 
 	// Revoke old refresh token
-	h.Store.RevokeRefreshToken(token)
+	store.RevokeRefreshToken(token)
 
-	user, err := h.Store.GetUserByID(rt.UserID)
+	user, err := store.GetUserByID(rt.UserID)
 	if err != nil {
 		WriteError(w, http.StatusInternalServerError, "server_error", "user not found")
 		return
@@ -378,19 +393,20 @@ func (h *Handler) tokenRefreshToken(w http.ResponseWriter, r *http.Request) {
 		audience = h.Issuer
 	}
 
-	accessToken, err := h.Tokens.CreateAccessToken(user, audience)
+	tenantID := tenant.FromContext(r.Context())
+	accessToken, err := h.Tokens.CreateAccessToken(user, audience, tenantID)
 	if err != nil {
 		WriteError(w, http.StatusInternalServerError, "server_error", "failed to create access token")
 		return
 	}
 
-	idToken, err := h.Tokens.CreateIDToken(user, audience, "")
+	idToken, err := h.Tokens.CreateIDToken(user, audience, "", tenantID)
 	if err != nil {
 		WriteError(w, http.StatusInternalServerError, "server_error", "failed to create id token")
 		return
 	}
 
-	newRefreshToken, err := h.Store.CreateRefreshToken(rt.ClientID, user.ID, rt.Scope)
+	newRefreshToken, err := store.CreateRefreshToken(rt.ClientID, user.ID, rt.Scope)
 	if err != nil {
 		WriteError(w, http.StatusInternalServerError, "server_error", "failed to create refresh token")
 		return
@@ -425,7 +441,8 @@ func (h *Handler) UserInfo(w http.ResponseWriter, r *http.Request) {
 	}
 
 	sub, _ := claims["sub"].(string)
-	user, err := h.Store.GetUserByID(sub)
+	store := h.tenantStore(r)
+	user, err := store.GetUserByID(sub)
 	if err != nil {
 		WriteError(w, http.StatusNotFound, "invalid_request", "user not found")
 		return
@@ -487,7 +504,8 @@ func (h *Handler) Revoke(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Per RFC 7009, revocation always returns 200 even if token doesn't exist
-	h.Store.RevokeRefreshToken(token)
+	store := h.tenantStore(r)
+	store.RevokeRefreshToken(token)
 	WriteJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
@@ -515,7 +533,8 @@ func (h *Handler) CreateClient(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	client, secret, err := h.Store.CreateClient(req.Name, req.RedirectURIs)
+	store := h.tenantStore(r)
+	client, secret, err := store.CreateClient(req.Name, req.RedirectURIs)
 	if err != nil {
 		WriteError(w, http.StatusInternalServerError, "server_error", "failed to create client")
 		return
@@ -551,8 +570,18 @@ func CheckAdmin(tokens *TokenService, store *Store, w http.ResponseWriter, r *ht
 		WriteError(w, http.StatusForbidden, "insufficient_scope", "admin role required")
 		return nil, false
 	}
+
+	// Validate tenant matches
+	tokenTenantID, _ := claims["tid"].(string)
+	requestTenantID := tenant.FromContext(r.Context())
+	if tokenTenantID != requestTenantID {
+		WriteError(w, http.StatusForbidden, "invalid_token", "token tenant mismatch")
+		return nil, false
+	}
+
 	sub, _ := claims["sub"].(string)
-	user, err := store.GetUserByID(sub)
+	scopedStore := store.ForTenant(requestTenantID)
+	user, err := scopedStore.GetUserByID(sub)
 	if err != nil {
 		WriteError(w, http.StatusUnauthorized, "invalid_token", "user not found")
 		return nil, false
@@ -572,7 +601,8 @@ func (h *Handler) AdminListUsers(w http.ResponseWriter, r *http.Request) {
 	if _, ok := h.requireAdmin(w, r); !ok {
 		return
 	}
-	users, err := h.Store.ListUsers()
+	store := h.tenantStore(r)
+	users, err := store.ListUsers()
 	if err != nil {
 		WriteError(w, http.StatusInternalServerError, "server_error", "failed to list users")
 		return
@@ -591,9 +621,11 @@ func (h *Handler) AdminUserByID(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	store := h.tenantStore(r)
+
 	switch r.Method {
 	case http.MethodGet:
-		user, err := h.Store.GetUserByID(id)
+		user, err := store.GetUserByID(id)
 		if err != nil {
 			WriteError(w, http.StatusNotFound, "not_found", "user not found")
 			return
@@ -613,7 +645,7 @@ func (h *Handler) AdminUserByID(w http.ResponseWriter, r *http.Request) {
 			WriteError(w, http.StatusBadRequest, "invalid_request", "role must be 'user' or 'admin'")
 			return
 		}
-		user, err := h.Store.UpdateUser(id, req.Name, req.Role)
+		user, err := store.UpdateUser(id, req.Name, req.Role)
 		if err != nil {
 			WriteError(w, http.StatusNotFound, "not_found", "user not found")
 			return
@@ -630,7 +662,7 @@ func (h *Handler) AdminUserByID(w http.ResponseWriter, r *http.Request) {
 			WriteError(w, http.StatusBadRequest, "invalid_request", "cannot delete yourself")
 			return
 		}
-		if err := h.Store.DeleteUser(id); err != nil {
+		if err := store.DeleteUser(id); err != nil {
 			WriteError(w, http.StatusNotFound, "not_found", "user not found")
 			return
 		}
@@ -649,7 +681,8 @@ func (h *Handler) AdminListClients(w http.ResponseWriter, r *http.Request) {
 	if _, ok := h.requireAdmin(w, r); !ok {
 		return
 	}
-	clients, err := h.Store.ListClients()
+	store := h.tenantStore(r)
+	clients, err := store.ListClients()
 	if err != nil {
 		WriteError(w, http.StatusInternalServerError, "server_error", "failed to list clients")
 		return
@@ -670,7 +703,8 @@ func (h *Handler) AdminDeleteClient(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, http.StatusBadRequest, "invalid_request", "client id required")
 		return
 	}
-	if err := h.Store.DeleteClient(id); err != nil {
+	store := h.tenantStore(r)
+	if err := store.DeleteClient(id); err != nil {
 		WriteError(w, http.StatusNotFound, "not_found", "client not found")
 		return
 	}
@@ -696,9 +730,11 @@ func (h *Handler) Activate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	store := h.tenantStore(r)
+
 	switch r.Method {
 	case http.MethodGet:
-		email, activated, err := h.Store.GetContactByInviteToken(token)
+		email, activated, err := store.GetContactByInviteToken(token)
 		if err != nil || activated {
 			w.Header().Set("Content-Type", "text/html")
 			w.WriteHeader(http.StatusNotFound)
@@ -770,7 +806,7 @@ button:hover{background:#1d4ed8}
 			return
 		}
 
-		user, err := h.Store.ActivateContact(token, password)
+		user, err := store.ActivateContact(token, password)
 		if err != nil {
 			if isJSON {
 				WriteError(w, http.StatusNotFound, "not_found", err.Error())

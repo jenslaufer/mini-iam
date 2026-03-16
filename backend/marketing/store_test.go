@@ -19,7 +19,8 @@ func newTestDB(t *testing.T) *sql.DB {
 	schema := `
 	CREATE TABLE contacts (
 		id TEXT PRIMARY KEY,
-		email TEXT UNIQUE NOT NULL,
+		tenant_id TEXT NOT NULL DEFAULT '',
+		email TEXT NOT NULL,
 		name TEXT NOT NULL DEFAULT '',
 		user_id TEXT,
 		unsubscribed INTEGER NOT NULL DEFAULT 0,
@@ -27,13 +28,16 @@ func newTestDB(t *testing.T) *sql.DB {
 		invite_token TEXT UNIQUE,
 		consent_source TEXT NOT NULL,
 		consent_at DATETIME NOT NULL,
-		created_at DATETIME NOT NULL
+		created_at DATETIME NOT NULL,
+		UNIQUE(tenant_id, email)
 	);
 	CREATE TABLE segments (
 		id TEXT PRIMARY KEY,
-		name TEXT UNIQUE NOT NULL,
+		tenant_id TEXT NOT NULL DEFAULT '',
+		name TEXT NOT NULL,
 		description TEXT NOT NULL DEFAULT '',
-		created_at DATETIME NOT NULL
+		created_at DATETIME NOT NULL,
+		UNIQUE(tenant_id, name)
 	);
 	CREATE TABLE contact_segments (
 		contact_id TEXT NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
@@ -42,6 +46,7 @@ func newTestDB(t *testing.T) *sql.DB {
 	);
 	CREATE TABLE campaigns (
 		id TEXT PRIMARY KEY,
+		tenant_id TEXT NOT NULL DEFAULT '',
 		subject TEXT NOT NULL,
 		html_body TEXT NOT NULL,
 		from_name TEXT NOT NULL DEFAULT '',
@@ -710,7 +715,7 @@ func TestCampaignSenderSync(t *testing.T) {
 	mailer := &LogMailer{}
 	sender := NewCampaignSender(s, mailer, "http://localhost:8080", 0)
 	sender.StartSync()
-	sender.Enqueue(camp.ID)
+	sender.Enqueue(camp.ID, "")
 
 	got, _ := s.GetCampaignByID(camp.ID)
 	if got.Status != "sent" {
@@ -734,7 +739,7 @@ func TestCampaignSenderSkipsNonDraft(t *testing.T) {
 
 	sender := NewCampaignSender(s, &LogMailer{}, "http://localhost:8080", 0)
 	sender.StartSync()
-	sender.Enqueue(camp.ID)
+	sender.Enqueue(camp.ID, "")
 
 	got, _ := s.GetCampaignByID(camp.ID)
 	if got.Status != "sent" {
@@ -758,7 +763,7 @@ func TestCampaignSenderMailerFailure(t *testing.T) {
 
 	sender := NewCampaignSender(s, &failMailer{}, "http://localhost:8080", 0)
 	sender.StartSync()
-	sender.Enqueue(camp.ID)
+	sender.Enqueue(camp.ID, "")
 
 	got, _ := s.GetCampaignByID(camp.ID)
 	if got.Status != "failed" {

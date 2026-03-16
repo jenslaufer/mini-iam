@@ -34,6 +34,38 @@ Open http://localhost:3000. Login: `admin@launch-kit.local` / `changeme`.
 | `SMTP_FROM` | — | Default sender email |
 | `SMTP_FROM_NAME` | `LaunchKit` | Default sender name |
 | `SMTP_RATE_MS` | `100` | Delay between emails (ms) |
+| `DEFAULT_TENANT` | — | Default tenant slug (auto-created on startup) |
+
+## Multi-Tenant
+
+Serve multiple websites from a single deployment. Each tenant gets isolated users, contacts, segments, and campaigns.
+
+**Tenant resolution** (in order):
+1. `X-Tenant` HTTP header (slug)
+2. Subdomain of `Host` header (`acme.example.com` → `acme`)
+3. `DEFAULT_TENANT` env var fallback
+
+**Setup:**
+```bash
+# Create a tenant
+curl -X POST /admin/tenants -H "Authorization: Bearer $TOKEN" \
+  -d '{"slug":"acme","name":"Acme Corp"}'
+
+# Requests scoped to tenant via header
+curl -H "X-Tenant: acme" /admin/contacts
+
+# Or via subdomain
+curl https://acme.example.com/admin/contacts
+```
+
+JWT tokens include a `tid` (tenant ID) claim. Admin access is validated against the request's tenant — a token from tenant A cannot access tenant B data.
+
+### Tenant Admin API
+
+| Method | Path | Description |
+|---|---|---|
+| GET/POST | `/admin/tenants` | List / create tenants |
+| GET/DELETE | `/admin/tenants/{id}` | Manage tenant |
 
 ## Endpoints
 
@@ -88,8 +120,10 @@ Open http://localhost:3000. Login: `admin@launch-kit.local` / `changeme`.
 
 ```
 backend/
-  main.go              - Entry point, routing
+  main.go              - Entry point, routing, migrations
   middleware.go         - CORS
+  tenant/
+    tenant.go           - Tenant model, store, context, middleware
   iam/
     store.go            - Users, clients, auth codes, tokens
     handlers.go         - OAuth2/OIDC + admin endpoints
