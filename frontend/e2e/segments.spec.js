@@ -69,7 +69,7 @@ test.describe('Segments page', () => {
     await expect(page.getByRole('heading', { name: new RegExp(name) })).toBeVisible()
     await page.getByRole('button', { name: 'Delete' }).last().click()
 
-    await expect(page.getByText(name)).not.toBeVisible()
+    await expect(page.locator('tbody').getByText(name)).not.toBeVisible()
     await expect(page.getByText('Segment deleted')).toBeVisible()
   })
 

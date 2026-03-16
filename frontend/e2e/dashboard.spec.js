@@ -10,7 +10,7 @@ test.describe('Dashboard', () => {
   test('shows dashboard with stat cards', async ({ page }) => {
     await expect(page.getByText('Total Users')).toBeVisible()
     await expect(page.getByText('Admins')).toBeVisible()
-    await expect(page.getByText('OAuth2 Clients')).toBeVisible()
+    await expect(page.getByText('OAuth2 Clients').first()).toBeVisible()
   })
 
   test('stat cards show correct counts', async ({ page }) => {
@@ -18,13 +18,13 @@ test.describe('Dashboard', () => {
     await expect(page.getByText('—')).toHaveCount(0, { timeout: 10000 })
 
     // At minimum the seeded admin account should be counted
-    const usersCard = page.locator('div').filter({ hasText: 'Total Users' }).first()
+    const usersCard = page.locator('p', { hasText: 'Total Users' })
     await expect(usersCard).toBeVisible()
 
-    const adminsCard = page.locator('div').filter({ hasText: /^Admins$/ }).first()
+    const adminsCard = page.locator('p', { hasText: 'Admins' }).first()
     await expect(adminsCard).toBeVisible()
 
-    const clientsCard = page.locator('div').filter({ hasText: 'OAuth2 Clients' }).first()
+    const clientsCard = page.locator('p', { hasText: 'OAuth2 Clients' }).first()
     await expect(clientsCard).toBeVisible()
   })
 
@@ -41,16 +41,18 @@ test.describe('Dashboard', () => {
   })
 
   test('sidebar navigation works', async ({ page }) => {
+    const sidebar = page.locator('aside')
+
     // Navigate to Users via sidebar
-    await page.getByRole('link', { name: 'Users' }).click()
+    await sidebar.getByRole('link', { name: 'Users' }).click()
     await expect(page).toHaveURL('/users')
 
     // Navigate to Clients via sidebar
-    await page.getByRole('link', { name: 'Clients' }).click()
+    await sidebar.getByRole('link', { name: 'Clients' }).click()
     await expect(page).toHaveURL('/clients')
 
     // Navigate back to Dashboard via sidebar
-    await page.getByRole('link', { name: 'Dashboard' }).click()
+    await sidebar.getByRole('link', { name: 'Dashboard' }).click()
     await expect(page).toHaveURL('/dashboard')
   })
 })

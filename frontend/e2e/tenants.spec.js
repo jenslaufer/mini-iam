@@ -12,7 +12,7 @@ test.describe('Tenants page', () => {
   })
 
   test('shows tenants list with at least the default tenant', async ({ page }) => {
-    await expect(page.getByText('default')).toBeVisible()
+    await expect(page.locator('tbody').getByText('default').first()).toBeVisible()
   })
 
   test('imported tenant appears in list', async ({ page }) => {
@@ -49,11 +49,12 @@ test.describe('Tenants page', () => {
   })
 
   test('can delete tenant with confirmation', async ({ page }) => {
-    const slug = `del-tenant-${Date.now()}`
+    const ts = Date.now()
+    const slug = `del-tenant-${ts}`
+    const name = `Del Tenant ${ts}`
     const token = await getAdminToken(BASE_URL)
-    const config = { slug, name: `Del Tenant ${Date.now()}`, smtp: {}, clients: [] }
-    const result = await importTenant(BASE_URL, token, config)
-    const tenantName = result.name
+    const config = { slug, name, smtp: {}, clients: [] }
+    await importTenant(BASE_URL, token, config)
 
     await page.reload()
     await expect(page.locator('tbody tr td .animate-pulse').first()).toHaveCount(0, { timeout: 10000 })
@@ -61,10 +62,10 @@ test.describe('Tenants page', () => {
     const row = page.locator('tr', { hasText: slug })
     await row.getByRole('button', { name: 'Delete' }).click()
 
-    await expect(page.getByRole('heading', { name: new RegExp(tenantName) })).toBeVisible()
+    await expect(page.getByRole('heading', { name: new RegExp(name) })).toBeVisible()
     await page.getByRole('button', { name: 'Delete' }).last().click()
 
-    await expect(page.getByText(slug)).not.toBeVisible()
+    await expect(page.locator('tbody').getByText(slug)).not.toBeVisible()
     await expect(page.getByText('Tenant deleted')).toBeVisible()
   })
 })

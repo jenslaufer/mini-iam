@@ -26,10 +26,10 @@ test.describe('Contacts page', () => {
 
     await page.getByPlaceholder('user@example.com').fill(email)
     await page.getByPlaceholder('Jane Smith').fill(name)
-    await page.getByRole('button', { name: 'Add Contact' }).click()
+    await page.getByRole('button', { name: 'Add Contact', exact: true }).click()
 
     await expect(page.getByText('Contact added')).toBeVisible()
-    await expect(page.getByText(email)).toBeVisible()
+    await expect(page.locator('tbody').getByText(email)).toBeVisible()
 
     // Cleanup
     const token = await getAdminToken(BASE_URL)
@@ -70,7 +70,7 @@ test.describe('Contacts page', () => {
     await expect(page.getByText('This action cannot be undone.')).toBeVisible()
     await page.getByRole('button', { name: 'Delete' }).last().click()
 
-    await expect(page.getByText(email)).not.toBeVisible()
+    await expect(page.locator('tbody').getByText(email)).not.toBeVisible()
     await expect(page.getByText('Contact deleted')).toBeVisible()
   })
 
@@ -87,7 +87,7 @@ test.describe('Contacts page', () => {
 
     await page.getByRole('button', { name: 'Cancel' }).click()
 
-    await expect(page.getByText(email)).toBeVisible()
+    await expect(page.locator('tbody').getByText(email)).toBeVisible()
 
     // Cleanup
     await deleteContact(BASE_URL, token, contact.id)
@@ -100,7 +100,7 @@ test.describe('Contacts page', () => {
 
     await page.getByRole('button', { name: '+ Add Contact' }).click()
     await page.getByPlaceholder('user@example.com').fill(email)
-    await page.getByRole('button', { name: 'Add Contact' }).click()
+    await page.getByRole('button', { name: 'Add Contact', exact: true }).click()
 
     // Toast shows an error (duplicate rejected by API)
     await expect(page.locator('.bg-red-50, [class*="error"]').or(page.getByText(/already|duplicate|exist/i))).toBeVisible()

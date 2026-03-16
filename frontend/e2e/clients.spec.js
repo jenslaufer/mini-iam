@@ -150,7 +150,7 @@ test.describe('Clients page', () => {
     await page.getByRole('button', { name: 'Delete' }).last().click()
 
     // Client is removed from the table
-    await expect(page.getByText(clientName)).not.toBeVisible()
+    await expect(page.locator('tbody').getByText(clientName)).not.toBeVisible()
     await expect(page.getByText('Client deleted')).toBeVisible()
   })
 

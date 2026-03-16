@@ -25,6 +25,10 @@ test.describe('Campaigns page', () => {
     // Need at least one segment for the form's segment selection
     const segment = await createSegment(BASE_URL, token, `Cam Seg ${ts}`, '')
 
+    // Reload so the newly created segment appears in the modal's segment list
+    await page.reload()
+    await expect(page.locator('tbody tr td .animate-pulse').first()).toHaveCount(0, { timeout: 10000 })
+
     await page.getByRole('button', { name: '+ New Campaign' }).click()
     await expect(page.getByRole('heading', { name: 'New Campaign' })).toBeVisible()
 
@@ -32,8 +36,8 @@ test.describe('Campaigns page', () => {
     await page.getByPlaceholder('Acme Corp').fill('E2E Sender')
     await page.getByPlaceholder('hello@acme.com').fill('e2e@example.com')
 
-    // Select the segment checkbox
-    await page.getByLabel(segment.name).check()
+    // Select the segment checkbox (label wraps checkbox + span, so locate via the label text)
+    await page.locator('label', { hasText: segment.name }).locator('input[type="checkbox"]').check()
 
     await page.getByPlaceholder('<h1>Hello!</h1><p>Your email content here...</p>').fill('<p>E2E test body</p>')
 
@@ -64,7 +68,7 @@ test.describe('Campaigns page', () => {
 
     const row = page.locator('tr', { hasText: subject })
     await expect(row).toBeVisible()
-    await expect(row.getByText('Draft')).toBeVisible()
+    await expect(row.locator('span', { hasText: 'Draft' }).first()).toBeVisible()
 
     // Cleanup
     await deleteCampaign(BASE_URL, token, campaign.id)
@@ -87,7 +91,7 @@ test.describe('Campaigns page', () => {
     await expect(page.getByRole('heading', { name: new RegExp(subject) })).toBeVisible()
     await page.getByRole('button', { name: 'Delete' }).last().click()
 
-    await expect(page.getByText(subject)).not.toBeVisible()
+    await expect(page.locator('tbody').getByText(subject)).not.toBeVisible()
     await expect(page.getByText('Campaign deleted')).toBeVisible()
 
     // Cleanup segment (campaign already deleted)

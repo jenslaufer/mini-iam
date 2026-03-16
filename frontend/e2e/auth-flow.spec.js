@@ -53,7 +53,7 @@ test.describe('Full auth integration flow', () => {
     await userRow.getByRole('button', { name: 'Delete' }).click()
     await expect(page.getByRole('heading', { name: new RegExp(userEmail) })).toBeVisible()
     await page.getByRole('button', { name: 'Delete' }).last().click()
-    await expect(page.getByText(userEmail)).not.toBeVisible()
+    await expect(page.locator('tbody').getByText(userEmail)).not.toBeVisible()
     await expect(page.getByText('User deleted')).toBeVisible()
     userId = null // already deleted
 
@@ -65,7 +65,7 @@ test.describe('Full auth integration flow', () => {
     await clientRow.getByRole('button', { name: 'Delete' }).click()
     await expect(page.getByRole('heading', { name: new RegExp(clientName) })).toBeVisible()
     await page.getByRole('button', { name: 'Delete' }).last().click()
-    await expect(page.getByText(clientName)).not.toBeVisible()
+    await expect(page.locator('tbody').getByText(clientName)).not.toBeVisible()
     await expect(page.getByText('Client deleted')).toBeVisible()
     clientId = null // already deleted
 
