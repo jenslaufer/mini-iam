@@ -16,11 +16,22 @@ import (
 )
 
 type Store struct {
-	db *sql.DB
+	db       *sql.DB
+	tenantID string
 }
 
 func NewStore(db *sql.DB) *Store {
 	return &Store{db: db}
+}
+
+// ForTenant returns a copy of the store scoped to the given tenant.
+func (s *Store) ForTenant(tenantID string) *Store {
+	return &Store{db: s.db, tenantID: tenantID}
+}
+
+// TenantID returns the tenant scope of this store.
+func (s *Store) TenantID() string {
+	return s.tenantID
 }
 
 // DB returns the underlying *sql.DB so the marketing package can share it.
@@ -37,7 +48,7 @@ func (s *Store) Close() error {
 
 func (s *Store) LoadOrCreateRSAKey() (*rsa.PrivateKey, error) {
 	var pemData string
-	err := s.db.QueryRow("SELECT private_key_pem FROM keys LIMIT 1").Scan(&pemData)
+	err := s.db.QueryRow("SELECT private_key_pem FROM keys WHERE tenant_id = ? LIMIT 1", s.tenantID).Scan(&pemData)
 	if err == nil {
 		block, _ := pem.Decode([]byte(pemData))
 		if block == nil {
@@ -57,8 +68,8 @@ func (s *Store) LoadOrCreateRSAKey() (*rsa.PrivateKey, error) {
 	})
 
 	_, err = s.db.Exec(
-		"INSERT INTO keys (id, private_key_pem, created_at) VALUES (?, ?, ?)",
-		uuid.NewString(), string(pemBytes), time.Now().UTC(),
+		"INSERT INTO keys (id, tenant_id, private_key_pem, created_at) VALUES (?, ?, ?, ?)",
+		uuid.NewString(), s.tenantID, string(pemBytes), time.Now().UTC(),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("store RSA key: %w", err)
@@ -77,6 +88,7 @@ func (s *Store) CreateUser(email, password, name string) (*User, error) {
 
 	u := &User{
 		ID:           uuid.NewString(),
+		TenantID:     s.tenantID,
 		Email:        email,
 		PasswordHash: string(hash),
 		Name:         name,
@@ -85,8 +97,8 @@ func (s *Store) CreateUser(email, password, name string) (*User, error) {
 	}
 
 	_, err = s.db.Exec(
-		"INSERT INTO users (id, email, password_hash, name, role, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-		u.ID, u.Email, u.PasswordHash, u.Name, u.Role, u.CreatedAt,
+		"INSERT INTO users (id, tenant_id, email, password_hash, name, role, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+		u.ID, u.TenantID, u.Email, u.PasswordHash, u.Name, u.Role, u.CreatedAt,
 	)
 	if err != nil {
 		return nil, err
@@ -97,8 +109,8 @@ func (s *Store) CreateUser(email, password, name string) (*User, error) {
 func (s *Store) GetUserByEmail(email string) (*User, error) {
 	u := &User{}
 	err := s.db.QueryRow(
-		"SELECT id, email, password_hash, name, role, created_at FROM users WHERE email = ?", email,
-	).Scan(&u.ID, &u.Email, &u.PasswordHash, &u.Name, &u.Role, &u.CreatedAt)
+		"SELECT id, tenant_id, email, password_hash, name, role, created_at FROM users WHERE email = ? AND tenant_id = ?", email, s.tenantID,
+	).Scan(&u.ID, &u.TenantID, &u.Email, &u.PasswordHash, &u.Name, &u.Role, &u.CreatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -108,8 +120,8 @@ func (s *Store) GetUserByEmail(email string) (*User, error) {
 func (s *Store) GetUserByID(id string) (*User, error) {
 	u := &User{}
 	err := s.db.QueryRow(
-		"SELECT id, email, password_hash, name, role, created_at FROM users WHERE id = ?", id,
-	).Scan(&u.ID, &u.Email, &u.PasswordHash, &u.Name, &u.Role, &u.CreatedAt)
+		"SELECT id, tenant_id, email, password_hash, name, role, created_at FROM users WHERE id = ? AND tenant_id = ?", id, s.tenantID,
+	).Scan(&u.ID, &u.TenantID, &u.Email, &u.PasswordHash, &u.Name, &u.Role, &u.CreatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -130,7 +142,7 @@ func (s *Store) AuthenticateUser(email, password string) (*User, error) {
 func (s *Store) SeedAdmin(email, password, name string) error {
 	existing, err := s.GetUserByEmail(email)
 	if err == nil {
-		_, err = s.db.Exec("UPDATE users SET role = 'admin' WHERE id = ?", existing.ID)
+		_, err = s.db.Exec("UPDATE users SET role = 'admin' WHERE id = ? AND tenant_id = ?", existing.ID, s.tenantID)
 		return err
 	}
 	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
@@ -138,14 +150,14 @@ func (s *Store) SeedAdmin(email, password, name string) error {
 		return err
 	}
 	_, err = s.db.Exec(
-		"INSERT INTO users (id, email, password_hash, name, role, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-		uuid.NewString(), email, string(hash), name, "admin", time.Now().UTC(),
+		"INSERT INTO users (id, tenant_id, email, password_hash, name, role, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+		uuid.NewString(), s.tenantID, email, string(hash), name, "admin", time.Now().UTC(),
 	)
 	return err
 }
 
 func (s *Store) ListUsers() ([]User, error) {
-	rows, err := s.db.Query("SELECT id, email, name, role, created_at FROM users ORDER BY created_at DESC")
+	rows, err := s.db.Query("SELECT id, tenant_id, email, name, role, created_at FROM users WHERE tenant_id = ? ORDER BY created_at DESC", s.tenantID)
 	if err != nil {
 		return nil, err
 	}
@@ -153,7 +165,7 @@ func (s *Store) ListUsers() ([]User, error) {
 	var users []User
 	for rows.Next() {
 		var u User
-		if err := rows.Scan(&u.ID, &u.Email, &u.Name, &u.Role, &u.CreatedAt); err != nil {
+		if err := rows.Scan(&u.ID, &u.TenantID, &u.Email, &u.Name, &u.Role, &u.CreatedAt); err != nil {
 			return nil, err
 		}
 		users = append(users, u)
@@ -172,7 +184,7 @@ func (s *Store) UpdateUser(id string, name, role string) (*User, error) {
 	if role != "" {
 		user.Role = role
 	}
-	_, err = s.db.Exec("UPDATE users SET name = ?, role = ? WHERE id = ?", user.Name, user.Role, user.ID)
+	_, err = s.db.Exec("UPDATE users SET name = ?, role = ? WHERE id = ? AND tenant_id = ?", user.Name, user.Role, user.ID, s.tenantID)
 	if err != nil {
 		return nil, err
 	}
@@ -180,7 +192,7 @@ func (s *Store) UpdateUser(id string, name, role string) (*User, error) {
 }
 
 func (s *Store) DeleteUser(id string) error {
-	result, err := s.db.Exec("DELETE FROM users WHERE id = ?", id)
+	result, err := s.db.Exec("DELETE FROM users WHERE id = ? AND tenant_id = ?", id, s.tenantID)
 	if err != nil {
 		return err
 	}
@@ -192,7 +204,7 @@ func (s *Store) DeleteUser(id string) error {
 }
 
 func (s *Store) ListClients() ([]Client, error) {
-	rows, err := s.db.Query("SELECT id, name, redirect_uris, created_at FROM clients ORDER BY created_at DESC")
+	rows, err := s.db.Query("SELECT id, tenant_id, name, redirect_uris, created_at FROM clients WHERE tenant_id = ? ORDER BY created_at DESC", s.tenantID)
 	if err != nil {
 		return nil, err
 	}
@@ -201,7 +213,7 @@ func (s *Store) ListClients() ([]Client, error) {
 	for rows.Next() {
 		var c Client
 		var urisJSON string
-		if err := rows.Scan(&c.ID, &c.Name, &urisJSON, &c.CreatedAt); err != nil {
+		if err := rows.Scan(&c.ID, &c.TenantID, &c.Name, &urisJSON, &c.CreatedAt); err != nil {
 			return nil, err
 		}
 		json.Unmarshal([]byte(urisJSON), &c.RedirectURIs)
@@ -211,7 +223,7 @@ func (s *Store) ListClients() ([]Client, error) {
 }
 
 func (s *Store) DeleteClient(id string) error {
-	result, err := s.db.Exec("DELETE FROM clients WHERE id = ?", id)
+	result, err := s.db.Exec("DELETE FROM clients WHERE id = ? AND tenant_id = ?", id, s.tenantID)
 	if err != nil {
 		return err
 	}
@@ -235,6 +247,7 @@ func (s *Store) CreateClient(name string, redirectURIs []string) (*Client, strin
 
 	c := &Client{
 		ID:           uuid.NewString(),
+		TenantID:     s.tenantID,
 		SecretHash:   string(hash),
 		Name:         name,
 		RedirectURIs: redirectURIs,
@@ -242,8 +255,8 @@ func (s *Store) CreateClient(name string, redirectURIs []string) (*Client, strin
 	}
 
 	_, err = s.db.Exec(
-		"INSERT INTO clients (id, secret_hash, name, redirect_uris, created_at) VALUES (?, ?, ?, ?, ?)",
-		c.ID, c.SecretHash, c.Name, string(urisJSON), c.CreatedAt,
+		"INSERT INTO clients (id, tenant_id, secret_hash, name, redirect_uris, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+		c.ID, c.TenantID, c.SecretHash, c.Name, string(urisJSON), c.CreatedAt,
 	)
 	if err != nil {
 		return nil, "", err
@@ -255,8 +268,8 @@ func (s *Store) GetClient(clientID string) (*Client, error) {
 	c := &Client{}
 	var urisJSON string
 	err := s.db.QueryRow(
-		"SELECT id, secret_hash, name, redirect_uris, created_at FROM clients WHERE id = ?", clientID,
-	).Scan(&c.ID, &c.SecretHash, &c.Name, &urisJSON, &c.CreatedAt)
+		"SELECT id, tenant_id, secret_hash, name, redirect_uris, created_at FROM clients WHERE id = ? AND tenant_id = ?", clientID, s.tenantID,
+	).Scan(&c.ID, &c.TenantID, &c.SecretHash, &c.Name, &urisJSON, &c.CreatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -275,9 +288,9 @@ func (s *Store) CreateAuthCode(clientID, userID, redirectURI, scope, nonce, code
 	expiresAt := time.Now().UTC().Add(10 * time.Minute)
 
 	_, err := s.db.Exec(
-		`INSERT INTO auth_codes (code, client_id, user_id, redirect_uri, scope, nonce, code_challenge, code_challenge_method, expires_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		code, clientID, userID, redirectURI, scope, nonce, codeChallenge, codeChallengeMethod, expiresAt,
+		`INSERT INTO auth_codes (code, tenant_id, client_id, user_id, redirect_uri, scope, nonce, code_challenge, code_challenge_method, expires_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		code, s.tenantID, clientID, userID, redirectURI, scope, nonce, codeChallenge, codeChallengeMethod, expiresAt,
 	)
 	if err != nil {
 		return "", err
@@ -290,7 +303,7 @@ func (s *Store) ConsumeAuthCode(code string) (*AuthCode, error) {
 	var used int
 	err := s.db.QueryRow(
 		`SELECT code, client_id, user_id, redirect_uri, scope, nonce, code_challenge, code_challenge_method, expires_at, used
-		 FROM auth_codes WHERE code = ?`, code,
+		 FROM auth_codes WHERE code = ? AND tenant_id = ?`, code, s.tenantID,
 	).Scan(&ac.Code, &ac.ClientID, &ac.UserID, &ac.RedirectURI, &ac.Scope, &ac.Nonce,
 		&ac.CodeChallenge, &ac.CodeChallengeMethod, &ac.ExpiresAt, &used)
 	if err != nil {
@@ -305,7 +318,7 @@ func (s *Store) ConsumeAuthCode(code string) (*AuthCode, error) {
 		return nil, fmt.Errorf("authorization code expired")
 	}
 
-	_, err = s.db.Exec("UPDATE auth_codes SET used = 1 WHERE code = ?", code)
+	_, err = s.db.Exec("UPDATE auth_codes SET used = 1 WHERE code = ? AND tenant_id = ?", code, s.tenantID)
 	if err != nil {
 		return nil, err
 	}
@@ -319,8 +332,8 @@ func (s *Store) CreateRefreshToken(clientID, userID, scope string) (string, erro
 	expiresAt := time.Now().UTC().Add(30 * 24 * time.Hour)
 
 	_, err := s.db.Exec(
-		"INSERT INTO refresh_tokens (token, client_id, user_id, scope, expires_at) VALUES (?, ?, ?, ?, ?)",
-		token, clientID, userID, scope, expiresAt,
+		"INSERT INTO refresh_tokens (token, tenant_id, client_id, user_id, scope, expires_at) VALUES (?, ?, ?, ?, ?, ?)",
+		token, s.tenantID, clientID, userID, scope, expiresAt,
 	)
 	if err != nil {
 		return "", err
@@ -332,7 +345,7 @@ func (s *Store) ValidateRefreshToken(token string) (*RefreshToken, error) {
 	rt := &RefreshToken{}
 	var revoked int
 	err := s.db.QueryRow(
-		"SELECT token, client_id, user_id, scope, expires_at, revoked FROM refresh_tokens WHERE token = ?", token,
+		"SELECT token, client_id, user_id, scope, expires_at, revoked FROM refresh_tokens WHERE token = ? AND tenant_id = ?", token, s.tenantID,
 	).Scan(&rt.Token, &rt.ClientID, &rt.UserID, &rt.Scope, &rt.ExpiresAt, &revoked)
 	if err != nil {
 		return nil, fmt.Errorf("invalid refresh token")
@@ -349,7 +362,7 @@ func (s *Store) ValidateRefreshToken(token string) (*RefreshToken, error) {
 }
 
 func (s *Store) RevokeRefreshToken(token string) error {
-	result, err := s.db.Exec("UPDATE refresh_tokens SET revoked = 1 WHERE token = ?", token)
+	result, err := s.db.Exec("UPDATE refresh_tokens SET revoked = 1 WHERE token = ? AND tenant_id = ?", token, s.tenantID)
 	if err != nil {
 		return err
 	}
@@ -380,6 +393,7 @@ func (s *Store) ActivateContact(inviteToken, password string) (*User, error) {
 
 	user := &User{
 		ID:           uuid.NewString(),
+		TenantID:     s.tenantID,
 		Email:        contact.email,
 		PasswordHash: string(hash),
 		Name:         contact.name,
@@ -394,16 +408,16 @@ func (s *Store) ActivateContact(inviteToken, password string) (*User, error) {
 	defer tx.Rollback()
 
 	_, err = tx.Exec(
-		"INSERT INTO users (id, email, password_hash, name, role, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-		user.ID, user.Email, user.PasswordHash, user.Name, user.Role, user.CreatedAt,
+		"INSERT INTO users (id, tenant_id, email, password_hash, name, role, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+		user.ID, user.TenantID, user.Email, user.PasswordHash, user.Name, user.Role, user.CreatedAt,
 	)
 	if err != nil {
 		return nil, err
 	}
 
 	_, err = tx.Exec(
-		"UPDATE contacts SET user_id = ?, invite_token = NULL WHERE id = ?",
-		user.ID, contact.id,
+		"UPDATE contacts SET user_id = ?, invite_token = NULL WHERE id = ? AND tenant_id = ?",
+		user.ID, contact.id, s.tenantID,
 	)
 	if err != nil {
 		return nil, err
@@ -427,7 +441,7 @@ func (s *Store) getContactByInviteToken(token string) (*contactRow, error) {
 	c := &contactRow{}
 	var userID sql.NullString
 	err := s.db.QueryRow(
-		`SELECT id, email, name, user_id FROM contacts WHERE invite_token = ?`, token,
+		`SELECT id, email, name, user_id FROM contacts WHERE invite_token = ? AND tenant_id = ?`, token, s.tenantID,
 	).Scan(&c.id, &c.email, &c.name, &userID)
 	if err != nil {
 		return nil, err

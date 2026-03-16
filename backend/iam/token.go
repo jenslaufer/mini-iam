@@ -20,7 +20,7 @@ func NewTokenService(key *rsa.PrivateKey, issuer string) *TokenService {
 	return &TokenService{privateKey: key, issuer: issuer}
 }
 
-func (ts *TokenService) CreateAccessToken(user *User, audience string) (string, error) {
+func (ts *TokenService) CreateAccessToken(user *User, audience string, tenantID string) (string, error) {
 	now := time.Now().UTC()
 	claims := jwt.MapClaims{
 		"sub":   user.ID,
@@ -31,6 +31,7 @@ func (ts *TokenService) CreateAccessToken(user *User, audience string) (string, 
 		"email": user.Email,
 		"name":  user.Name,
 		"role":  user.Role,
+		"tid":   tenantID,
 	}
 
 	token := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
@@ -38,7 +39,7 @@ func (ts *TokenService) CreateAccessToken(user *User, audience string) (string, 
 	return token.SignedString(ts.privateKey)
 }
 
-func (ts *TokenService) CreateIDToken(user *User, audience, nonce string) (string, error) {
+func (ts *TokenService) CreateIDToken(user *User, audience, nonce string, tenantID string) (string, error) {
 	now := time.Now().UTC()
 	claims := jwt.MapClaims{
 		"sub":   user.ID,
@@ -49,6 +50,7 @@ func (ts *TokenService) CreateIDToken(user *User, audience, nonce string) (strin
 		"email": user.Email,
 		"name":  user.Name,
 		"role":  user.Role,
+		"tid":   tenantID,
 	}
 	if nonce != "" {
 		claims["nonce"] = nonce

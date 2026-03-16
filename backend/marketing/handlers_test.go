@@ -34,9 +34,10 @@ func newHandlerEnv(t *testing.T) *testHandlerEnv {
 		t.Fatal(err)
 	}
 	tokens := iam.NewTokenService(key, "http://test-issuer")
+	registry := iam.NewStaticTokenRegistry(tokens)
 
-	iamHandler := iam.NewHandler(iamStore, tokens, "http://test-issuer")
-	mktHandler := NewHandler(mktStore, iamStore, tokens)
+	iamHandler := iam.NewHandler(iamStore, registry, "http://test-issuer")
+	mktHandler := NewHandler(mktStore, iamStore, registry)
 
 	sender := NewCampaignSender(mktStore, &LogMailer{}, "http://test-issuer", 0)
 	sender.StartSync()
@@ -72,35 +73,37 @@ func newTestHandlerDB(t *testing.T) *sql.DB {
 	schema := `
 	PRAGMA foreign_keys = ON;
 	CREATE TABLE users (
-		id TEXT PRIMARY KEY, email TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL,
-		name TEXT NOT NULL, role TEXT NOT NULL DEFAULT 'user', created_at DATETIME NOT NULL
+		id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL DEFAULT '', email TEXT NOT NULL, password_hash TEXT NOT NULL,
+		name TEXT NOT NULL, role TEXT NOT NULL DEFAULT 'user', created_at DATETIME NOT NULL,
+		UNIQUE(tenant_id, email)
 	);
 	CREATE TABLE clients (
-		id TEXT PRIMARY KEY, secret_hash TEXT NOT NULL, name TEXT NOT NULL,
+		id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL DEFAULT '', secret_hash TEXT NOT NULL, name TEXT NOT NULL,
 		redirect_uris TEXT NOT NULL, created_at DATETIME NOT NULL
 	);
 	CREATE TABLE auth_codes (
-		code TEXT PRIMARY KEY, client_id TEXT NOT NULL, user_id TEXT NOT NULL,
+		code TEXT PRIMARY KEY, tenant_id TEXT NOT NULL DEFAULT '', client_id TEXT NOT NULL, user_id TEXT NOT NULL,
 		redirect_uri TEXT NOT NULL, scope TEXT NOT NULL DEFAULT '', nonce TEXT NOT NULL DEFAULT '',
 		code_challenge TEXT NOT NULL DEFAULT '', code_challenge_method TEXT NOT NULL DEFAULT '',
 		expires_at DATETIME NOT NULL, used INTEGER NOT NULL DEFAULT 0
 	);
 	CREATE TABLE refresh_tokens (
-		token TEXT PRIMARY KEY, client_id TEXT NOT NULL, user_id TEXT NOT NULL,
+		token TEXT PRIMARY KEY, tenant_id TEXT NOT NULL DEFAULT '', client_id TEXT NOT NULL, user_id TEXT NOT NULL,
 		scope TEXT NOT NULL DEFAULT '', expires_at DATETIME NOT NULL, revoked INTEGER NOT NULL DEFAULT 0
 	);
 	CREATE TABLE keys (
-		id TEXT PRIMARY KEY, private_key_pem TEXT NOT NULL, created_at DATETIME NOT NULL
+		id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL DEFAULT '', private_key_pem TEXT NOT NULL, created_at DATETIME NOT NULL
 	);
 	CREATE TABLE contacts (
-		id TEXT PRIMARY KEY, email TEXT UNIQUE NOT NULL, name TEXT NOT NULL DEFAULT '',
+		id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL DEFAULT '', email TEXT NOT NULL, name TEXT NOT NULL DEFAULT '',
 		user_id TEXT REFERENCES users(id), unsubscribed INTEGER NOT NULL DEFAULT 0,
 		unsubscribe_token TEXT UNIQUE NOT NULL, invite_token TEXT UNIQUE,
-		consent_source TEXT NOT NULL, consent_at DATETIME NOT NULL, created_at DATETIME NOT NULL
+		consent_source TEXT NOT NULL, consent_at DATETIME NOT NULL, created_at DATETIME NOT NULL,
+		UNIQUE(tenant_id, email)
 	);
 	CREATE TABLE segments (
-		id TEXT PRIMARY KEY, name TEXT UNIQUE NOT NULL, description TEXT NOT NULL DEFAULT '',
-		created_at DATETIME NOT NULL
+		id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL DEFAULT '', name TEXT NOT NULL, description TEXT NOT NULL DEFAULT '',
+		created_at DATETIME NOT NULL, UNIQUE(tenant_id, name)
 	);
 	CREATE TABLE contact_segments (
 		contact_id TEXT NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
@@ -108,7 +111,7 @@ func newTestHandlerDB(t *testing.T) *sql.DB {
 		PRIMARY KEY (contact_id, segment_id)
 	);
 	CREATE TABLE campaigns (
-		id TEXT PRIMARY KEY, subject TEXT NOT NULL, html_body TEXT NOT NULL,
+		id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL DEFAULT '', subject TEXT NOT NULL, html_body TEXT NOT NULL,
 		from_name TEXT NOT NULL DEFAULT '', from_email TEXT NOT NULL DEFAULT '',
 		status TEXT NOT NULL DEFAULT 'draft', sent_at DATETIME, created_at DATETIME NOT NULL
 	);

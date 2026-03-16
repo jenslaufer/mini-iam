@@ -1,22 +1,43 @@
 package iam
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/url"
 	"regexp"
 	"strings"
+
+	"github.com/jenslaufer/launch-kit/tenantctx"
 )
 
 type Handler struct {
-	Store  *Store
-	Tokens *TokenService
-	Issuer string
+	Store    *Store
+	Registry *TokenRegistry
+	Issuer   string
 }
 
-func NewHandler(store *Store, tokens *TokenService, issuer string) *Handler {
-	return &Handler{Store: store, Tokens: tokens, Issuer: issuer}
+func NewHandler(store *Store, registry *TokenRegistry, issuer string) *Handler {
+	return &Handler{Store: store, Registry: registry, Issuer: issuer}
+}
+
+// tenantStore returns a store scoped to the request's tenant.
+func (h *Handler) tenantStore(r *http.Request) *Store {
+	return h.Store.ForTenant(tenantctx.FromContext(r.Context()))
+}
+
+// tenantTokens returns a TokenService for the request's tenant.
+func (h *Handler) tenantTokens(r *http.Request) (*TokenService, error) {
+	return h.Registry.ForTenant(tenantctx.FromContext(r.Context()), tenantctx.SlugFromContext(r.Context()))
+}
+
+// tenantIssuer returns the issuer URL for the request's tenant.
+func (h *Handler) tenantIssuer(r *http.Request) string {
+	if slug := tenantctx.SlugFromContext(r.Context()); slug != "" {
+		return h.Issuer + "/t/" + slug
+	}
+	return h.Issuer
 }
 
 // --- Helpers ---
@@ -68,7 +89,8 @@ func (h *Handler) Register(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	user, err := h.Store.CreateUser(req.Email, req.Password, req.Name)
+	store := h.tenantStore(r)
+	user, err := store.CreateUser(req.Email, req.Password, req.Name)
 	if err != nil {
 		if strings.Contains(err.Error(), "UNIQUE") {
 			WriteError(w, http.StatusConflict, "invalid_request", "email already registered")
@@ -96,25 +118,33 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	user, err := h.Store.AuthenticateUser(req.Email, req.Password)
+	store := h.tenantStore(r)
+	user, err := store.AuthenticateUser(req.Email, req.Password)
 	if err != nil {
 		WriteError(w, http.StatusUnauthorized, "invalid_grant", "invalid credentials")
 		return
 	}
 
-	accessToken, err := h.Tokens.CreateAccessToken(user, h.Issuer)
+	ts, err := h.tenantTokens(r)
+	if err != nil {
+		WriteError(w, http.StatusInternalServerError, "server_error", "failed to load tenant keys")
+		return
+	}
+
+	tenantID := tenantctx.FromContext(r.Context())
+	accessToken, err := ts.CreateAccessToken(user, ts.issuer, tenantID)
 	if err != nil {
 		WriteError(w, http.StatusInternalServerError, "server_error", "failed to create access token")
 		return
 	}
 
-	idToken, err := h.Tokens.CreateIDToken(user, h.Issuer, "")
+	idToken, err := ts.CreateIDToken(user, ts.issuer, "", tenantID)
 	if err != nil {
 		WriteError(w, http.StatusInternalServerError, "server_error", "failed to create id token")
 		return
 	}
 
-	refreshToken, err := h.Store.CreateRefreshToken("", user.ID, "openid profile email")
+	refreshToken, err := store.CreateRefreshToken("", user.ID, "openid profile email")
 	if err != nil {
 		WriteError(w, http.StatusInternalServerError, "server_error", "failed to create refresh token")
 		return
@@ -142,7 +172,7 @@ input[type=email],input[type=password]{width:100%%;padding:0.5rem;margin-top:0.2
 button{width:100%%;padding:0.75rem;margin-top:1.5rem;background:#2563eb;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:1rem}
 button:hover{background:#1d4ed8}
 </style></head><body>
-<form method="POST" action="/authorize">
+<form method="POST" action="">
 <h2>Sign In</h2>
 <input type="hidden" name="client_id" value="%s">
 <input type="hidden" name="redirect_uri" value="%s">
@@ -195,8 +225,10 @@ func (h *Handler) AuthorizePOST(w http.ResponseWriter, r *http.Request) {
 	codeChallenge := r.FormValue("code_challenge")
 	codeChallengeMethod := r.FormValue("code_challenge_method")
 
+	store := h.tenantStore(r)
+
 	// Validate client
-	client, err := h.Store.GetClient(clientID)
+	client, err := store.GetClient(clientID)
 	if err != nil {
 		WriteError(w, http.StatusBadRequest, "invalid_request", "unknown client_id")
 		return
@@ -209,7 +241,7 @@ func (h *Handler) AuthorizePOST(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Authenticate user
-	user, err := h.Store.AuthenticateUser(email, password)
+	user, err := store.AuthenticateUser(email, password)
 	if err != nil {
 		// Re-render login form with error (minimal approach: redirect back)
 		w.Header().Set("Content-Type", "text/html")
@@ -219,7 +251,7 @@ func (h *Handler) AuthorizePOST(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Generate auth code
-	code, err := h.Store.CreateAuthCode(clientID, user.ID, redirectURI, scope, nonce, codeChallenge, codeChallengeMethod)
+	code, err := store.CreateAuthCode(clientID, user.ID, redirectURI, scope, nonce, codeChallenge, codeChallengeMethod)
 	if err != nil {
 		WriteError(w, http.StatusInternalServerError, "server_error", "failed to create authorization code")
 		return
@@ -277,7 +309,8 @@ func (h *Handler) tokenAuthorizationCode(w http.ResponseWriter, r *http.Request)
 	clientID := r.FormValue("client_id")
 	clientSecret := r.FormValue("client_secret")
 
-	ac, err := h.Store.ConsumeAuthCode(code)
+	store := h.tenantStore(r)
+	ac, err := store.ConsumeAuthCode(code)
 	if err != nil {
 		WriteError(w, http.StatusBadRequest, "invalid_grant", err.Error())
 		return
@@ -307,36 +340,43 @@ func (h *Handler) tokenAuthorizationCode(w http.ResponseWriter, r *http.Request)
 		}
 	} else if clientSecret != "" {
 		// Confidential client: verify client secret
-		client, err := h.Store.GetClient(ac.ClientID)
+		client, err := store.GetClient(ac.ClientID)
 		if err != nil {
 			WriteError(w, http.StatusBadRequest, "invalid_grant", "unknown client")
 			return
 		}
-		if !h.Store.ValidateClientSecret(client, clientSecret) {
+		if !store.ValidateClientSecret(client, clientSecret) {
 			WriteError(w, http.StatusUnauthorized, "invalid_client", "invalid client credentials")
 			return
 		}
 	}
 
-	user, err := h.Store.GetUserByID(ac.UserID)
+	user, err := store.GetUserByID(ac.UserID)
 	if err != nil {
 		WriteError(w, http.StatusInternalServerError, "server_error", "user not found")
 		return
 	}
 
-	accessToken, err := h.Tokens.CreateAccessToken(user, ac.ClientID)
+	ts, err := h.tenantTokens(r)
+	if err != nil {
+		WriteError(w, http.StatusInternalServerError, "server_error", "failed to load tenant keys")
+		return
+	}
+
+	tenantID := tenantctx.FromContext(r.Context())
+	accessToken, err := ts.CreateAccessToken(user, ac.ClientID, tenantID)
 	if err != nil {
 		WriteError(w, http.StatusInternalServerError, "server_error", "failed to create access token")
 		return
 	}
 
-	idToken, err := h.Tokens.CreateIDToken(user, ac.ClientID, ac.Nonce)
+	idToken, err := ts.CreateIDToken(user, ac.ClientID, ac.Nonce, tenantID)
 	if err != nil {
 		WriteError(w, http.StatusInternalServerError, "server_error", "failed to create id token")
 		return
 	}
 
-	refreshToken, err := h.Store.CreateRefreshToken(ac.ClientID, user.ID, ac.Scope)
+	refreshToken, err := store.CreateRefreshToken(ac.ClientID, user.ID, ac.Scope)
 	if err != nil {
 		WriteError(w, http.StatusInternalServerError, "server_error", "failed to create refresh token")
 		return
@@ -358,39 +398,47 @@ func (h *Handler) tokenRefreshToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rt, err := h.Store.ValidateRefreshToken(token)
+	store := h.tenantStore(r)
+	rt, err := store.ValidateRefreshToken(token)
 	if err != nil {
 		WriteError(w, http.StatusBadRequest, "invalid_grant", err.Error())
 		return
 	}
 
 	// Revoke old refresh token
-	h.Store.RevokeRefreshToken(token)
+	store.RevokeRefreshToken(token)
 
-	user, err := h.Store.GetUserByID(rt.UserID)
+	user, err := store.GetUserByID(rt.UserID)
 	if err != nil {
 		WriteError(w, http.StatusInternalServerError, "server_error", "user not found")
 		return
 	}
 
-	audience := rt.ClientID
-	if audience == "" {
-		audience = h.Issuer
+	ts, err := h.tenantTokens(r)
+	if err != nil {
+		WriteError(w, http.StatusInternalServerError, "server_error", "failed to load tenant keys")
+		return
 	}
 
-	accessToken, err := h.Tokens.CreateAccessToken(user, audience)
+	audience := rt.ClientID
+	if audience == "" {
+		audience = ts.issuer
+	}
+
+	tenantID := tenantctx.FromContext(r.Context())
+	accessToken, err := ts.CreateAccessToken(user, audience, tenantID)
 	if err != nil {
 		WriteError(w, http.StatusInternalServerError, "server_error", "failed to create access token")
 		return
 	}
 
-	idToken, err := h.Tokens.CreateIDToken(user, audience, "")
+	idToken, err := ts.CreateIDToken(user, audience, "", tenantID)
 	if err != nil {
 		WriteError(w, http.StatusInternalServerError, "server_error", "failed to create id token")
 		return
 	}
 
-	newRefreshToken, err := h.Store.CreateRefreshToken(rt.ClientID, user.ID, rt.Scope)
+	newRefreshToken, err := store.CreateRefreshToken(rt.ClientID, user.ID, rt.Scope)
 	if err != nil {
 		WriteError(w, http.StatusInternalServerError, "server_error", "failed to create refresh token")
 		return
@@ -418,14 +466,21 @@ func (h *Handler) UserInfo(w http.ResponseWriter, r *http.Request) {
 	}
 	tokenStr := strings.TrimPrefix(auth, "Bearer ")
 
-	claims, err := h.Tokens.ValidateAccessToken(tokenStr)
+	ts, err := h.tenantTokens(r)
+	if err != nil {
+		WriteError(w, http.StatusInternalServerError, "server_error", "failed to load tenant keys")
+		return
+	}
+
+	claims, err := ts.ValidateAccessToken(tokenStr)
 	if err != nil {
 		WriteError(w, http.StatusUnauthorized, "invalid_token", "invalid or expired token")
 		return
 	}
 
 	sub, _ := claims["sub"].(string)
-	user, err := h.Store.GetUserByID(sub)
+	store := h.tenantStore(r)
+	user, err := store.GetUserByID(sub)
 	if err != nil {
 		WriteError(w, http.StatusNotFound, "invalid_request", "user not found")
 		return
@@ -440,7 +495,12 @@ func (h *Handler) UserInfo(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) JWKS(w http.ResponseWriter, r *http.Request) {
-	data, err := h.Tokens.JWKSBytes()
+	ts, err := h.tenantTokens(r)
+	if err != nil {
+		WriteError(w, http.StatusInternalServerError, "server_error", "failed to load tenant keys")
+		return
+	}
+	data, err := ts.JWKSBytes()
 	if err != nil {
 		WriteError(w, http.StatusInternalServerError, "server_error", "failed to generate JWKS")
 		return
@@ -450,14 +510,15 @@ func (h *Handler) JWKS(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) Discovery(w http.ResponseWriter, r *http.Request) {
+	base := h.tenantIssuer(r)
 	doc := OIDCDiscovery{
-		Issuer:                            h.Issuer,
-		AuthorizationEndpoint:             h.Issuer + "/authorize",
-		TokenEndpoint:                     h.Issuer + "/token",
-		UserinfoEndpoint:                  h.Issuer + "/userinfo",
-		JwksURI:                           h.Issuer + "/jwks",
-		RevocationEndpoint:                h.Issuer + "/revoke",
-		RegistrationEndpoint:              h.Issuer + "/clients",
+		Issuer:                            base,
+		AuthorizationEndpoint:             base + "/authorize",
+		TokenEndpoint:                     base + "/token",
+		UserinfoEndpoint:                  base + "/userinfo",
+		JwksURI:                           base + "/jwks",
+		RevocationEndpoint:                base + "/revoke",
+		RegistrationEndpoint:              base + "/clients",
 		ScopesSupported:                   []string{"openid", "profile", "email"},
 		ResponseTypesSupported:            []string{"code"},
 		GrantTypesSupported:               []string{"authorization_code", "refresh_token"},
@@ -487,7 +548,8 @@ func (h *Handler) Revoke(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Per RFC 7009, revocation always returns 200 even if token doesn't exist
-	h.Store.RevokeRefreshToken(token)
+	store := h.tenantStore(r)
+	store.RevokeRefreshToken(token)
 	WriteJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
@@ -515,7 +577,8 @@ func (h *Handler) CreateClient(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	client, secret, err := h.Store.CreateClient(req.Name, req.RedirectURIs)
+	store := h.tenantStore(r)
+	client, secret, err := store.CreateClient(req.Name, req.RedirectURIs)
 	if err != nil {
 		WriteError(w, http.StatusInternalServerError, "server_error", "failed to create client")
 		return
@@ -534,14 +597,21 @@ func (h *Handler) CreateClient(w http.ResponseWriter, r *http.Request) {
 // CheckAdmin validates the Bearer token and checks the admin role.
 // Returns the admin User and true on success, writes an error and returns false on failure.
 // Used by both IAM and marketing handlers.
-func CheckAdmin(tokens *TokenService, store *Store, w http.ResponseWriter, r *http.Request) (*User, bool) {
+func CheckAdmin(registry *TokenRegistry, store *Store, w http.ResponseWriter, r *http.Request) (*User, bool) {
 	auth := r.Header.Get("Authorization")
 	if !strings.HasPrefix(auth, "Bearer ") {
 		WriteError(w, http.StatusUnauthorized, "invalid_token", "Bearer token required")
 		return nil, false
 	}
 	tokenStr := strings.TrimPrefix(auth, "Bearer ")
-	claims, err := tokens.ValidateAccessToken(tokenStr)
+
+	ts, err := registry.ForTenant(tenantctx.FromContext(r.Context()), tenantctx.SlugFromContext(r.Context()))
+	if err != nil {
+		WriteError(w, http.StatusInternalServerError, "server_error", "failed to load tenant keys")
+		return nil, false
+	}
+
+	claims, err := ts.ValidateAccessToken(tokenStr)
 	if err != nil {
 		WriteError(w, http.StatusUnauthorized, "invalid_token", "invalid or expired token")
 		return nil, false
@@ -551,8 +621,18 @@ func CheckAdmin(tokens *TokenService, store *Store, w http.ResponseWriter, r *ht
 		WriteError(w, http.StatusForbidden, "insufficient_scope", "admin role required")
 		return nil, false
 	}
+
+	// Validate tenant matches
+	tokenTenantID, _ := claims["tid"].(string)
+	requestTenantID := tenantctx.FromContext(r.Context())
+	if tokenTenantID != requestTenantID {
+		WriteError(w, http.StatusForbidden, "invalid_token", "token tenant mismatch")
+		return nil, false
+	}
+
 	sub, _ := claims["sub"].(string)
-	user, err := store.GetUserByID(sub)
+	scopedStore := store.ForTenant(requestTenantID)
+	user, err := scopedStore.GetUserByID(sub)
 	if err != nil {
 		WriteError(w, http.StatusUnauthorized, "invalid_token", "user not found")
 		return nil, false
@@ -560,8 +640,71 @@ func CheckAdmin(tokens *TokenService, store *Store, w http.ResponseWriter, r *ht
 	return user, true
 }
 
+// CheckAdminCrossTenant validates the Bearer token as admin without requiring
+// the token's tenant to match the request's tenant context. Used for global
+// admin endpoints like tenant import where the caller is an admin of any tenant.
+func CheckAdminCrossTenant(registry *TokenRegistry, store *Store, w http.ResponseWriter, r *http.Request) (*User, bool) {
+	auth := r.Header.Get("Authorization")
+	if !strings.HasPrefix(auth, "Bearer ") {
+		WriteError(w, http.StatusUnauthorized, "invalid_token", "Bearer token required")
+		return nil, false
+	}
+	tokenStr := strings.TrimPrefix(auth, "Bearer ")
+
+	// Extract tid claim from token without verification to find the right key.
+	tidVal := extractClaim(tokenStr, "tid")
+	tid, _ := tidVal.(string)
+	if tid == "" {
+		WriteError(w, http.StatusUnauthorized, "invalid_token", "token has no tenant claim")
+		return nil, false
+	}
+
+	ts, err := registry.ForTenant(tid, "")
+	if err != nil {
+		WriteError(w, http.StatusInternalServerError, "server_error", "failed to load tenant keys")
+		return nil, false
+	}
+
+	claims, err := ts.ValidateAccessToken(tokenStr)
+	if err != nil {
+		WriteError(w, http.StatusUnauthorized, "invalid_token", "invalid or expired token")
+		return nil, false
+	}
+	role, _ := claims["role"].(string)
+	if role != "admin" {
+		WriteError(w, http.StatusForbidden, "insufficient_scope", "admin role required")
+		return nil, false
+	}
+
+	sub, _ := claims["sub"].(string)
+	scopedStore := store.ForTenant(tid)
+	user, err := scopedStore.GetUserByID(sub)
+	if err != nil {
+		WriteError(w, http.StatusUnauthorized, "invalid_token", "user not found")
+		return nil, false
+	}
+	return user, true
+}
+
+// extractClaim parses a JWT without verification to read a specific claim.
+func extractClaim(tokenStr, claimName string) interface{} {
+	parts := strings.Split(tokenStr, ".")
+	if len(parts) != 3 {
+		return nil
+	}
+	decoded, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return nil
+	}
+	var claims map[string]interface{}
+	if err := json.Unmarshal(decoded, &claims); err != nil {
+		return nil
+	}
+	return claims[claimName]
+}
+
 func (h *Handler) requireAdmin(w http.ResponseWriter, r *http.Request) (*User, bool) {
-	return CheckAdmin(h.Tokens, h.Store, w, r)
+	return CheckAdmin(h.Registry, h.Store, w, r)
 }
 
 func (h *Handler) AdminListUsers(w http.ResponseWriter, r *http.Request) {
@@ -572,7 +715,8 @@ func (h *Handler) AdminListUsers(w http.ResponseWriter, r *http.Request) {
 	if _, ok := h.requireAdmin(w, r); !ok {
 		return
 	}
-	users, err := h.Store.ListUsers()
+	store := h.tenantStore(r)
+	users, err := store.ListUsers()
 	if err != nil {
 		WriteError(w, http.StatusInternalServerError, "server_error", "failed to list users")
 		return
@@ -591,9 +735,11 @@ func (h *Handler) AdminUserByID(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	store := h.tenantStore(r)
+
 	switch r.Method {
 	case http.MethodGet:
-		user, err := h.Store.GetUserByID(id)
+		user, err := store.GetUserByID(id)
 		if err != nil {
 			WriteError(w, http.StatusNotFound, "not_found", "user not found")
 			return
@@ -613,7 +759,7 @@ func (h *Handler) AdminUserByID(w http.ResponseWriter, r *http.Request) {
 			WriteError(w, http.StatusBadRequest, "invalid_request", "role must be 'user' or 'admin'")
 			return
 		}
-		user, err := h.Store.UpdateUser(id, req.Name, req.Role)
+		user, err := store.UpdateUser(id, req.Name, req.Role)
 		if err != nil {
 			WriteError(w, http.StatusNotFound, "not_found", "user not found")
 			return
@@ -623,14 +769,20 @@ func (h *Handler) AdminUserByID(w http.ResponseWriter, r *http.Request) {
 	case http.MethodDelete:
 		auth := r.Header.Get("Authorization")
 		tokenStr := strings.TrimPrefix(auth, "Bearer ")
-		claims, _ := h.Tokens.ValidateAccessToken(tokenStr)
+
+		ts, err := h.tenantTokens(r)
+		if err != nil {
+			WriteError(w, http.StatusInternalServerError, "server_error", "failed to load tenant keys")
+			return
+		}
+		claims, _ := ts.ValidateAccessToken(tokenStr)
 		adminID, _ := claims["sub"].(string)
 
 		if id == adminID {
 			WriteError(w, http.StatusBadRequest, "invalid_request", "cannot delete yourself")
 			return
 		}
-		if err := h.Store.DeleteUser(id); err != nil {
+		if err := store.DeleteUser(id); err != nil {
 			WriteError(w, http.StatusNotFound, "not_found", "user not found")
 			return
 		}
@@ -649,7 +801,8 @@ func (h *Handler) AdminListClients(w http.ResponseWriter, r *http.Request) {
 	if _, ok := h.requireAdmin(w, r); !ok {
 		return
 	}
-	clients, err := h.Store.ListClients()
+	store := h.tenantStore(r)
+	clients, err := store.ListClients()
 	if err != nil {
 		WriteError(w, http.StatusInternalServerError, "server_error", "failed to list clients")
 		return
@@ -670,7 +823,8 @@ func (h *Handler) AdminDeleteClient(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, http.StatusBadRequest, "invalid_request", "client id required")
 		return
 	}
-	if err := h.Store.DeleteClient(id); err != nil {
+	store := h.tenantStore(r)
+	if err := store.DeleteClient(id); err != nil {
 		WriteError(w, http.StatusNotFound, "not_found", "client not found")
 		return
 	}
@@ -696,9 +850,11 @@ func (h *Handler) Activate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	store := h.tenantStore(r)
+
 	switch r.Method {
 	case http.MethodGet:
-		email, activated, err := h.Store.GetContactByInviteToken(token)
+		email, activated, err := store.GetContactByInviteToken(token)
 		if err != nil || activated {
 			w.Header().Set("Content-Type", "text/html")
 			w.WriteHeader(http.StatusNotFound)
@@ -770,7 +926,7 @@ button:hover{background:#1d4ed8}
 			return
 		}
 
-		user, err := h.Store.ActivateContact(token, password)
+		user, err := store.ActivateContact(token, password)
 		if err != nil {
 			if isJSON {
 				WriteError(w, http.StatusNotFound, "not_found", err.Error())

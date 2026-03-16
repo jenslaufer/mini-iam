@@ -57,15 +57,26 @@ func (m *LogMailer) Send(to, subject, htmlBody string, headers map[string]string
 	return nil
 }
 
+// TenantSMTPProvider looks up SMTP config for a tenant. Implemented by tenant.Store.
+type TenantSMTPProvider interface {
+	GetSMTPConfig(tenantID string) (host, port, user, password, from, fromName string, rateMS int, err error)
+}
+
 // --- Campaign Sender (background worker) ---
 
+type sendRequest struct {
+	campaignID string
+	tenantID   string
+}
+
 type CampaignSender struct {
-	store    *Store
-	mailer   Mailer
-	issuer   string
-	rateMS   int
-	queue    chan string
-	syncMode bool
+	store          *Store
+	mailer         Mailer
+	smtpProvider   TenantSMTPProvider
+	issuer         string
+	rateMS         int
+	queue          chan sendRequest
+	syncMode       bool
 }
 
 func NewCampaignSender(store *Store, mailer Mailer, issuer string, rateMS int) *CampaignSender {
@@ -74,14 +85,30 @@ func NewCampaignSender(store *Store, mailer Mailer, issuer string, rateMS int) *
 		mailer: mailer,
 		issuer: issuer,
 		rateMS: rateMS,
-		queue:  make(chan string, 100),
+		queue:  make(chan sendRequest, 100),
 	}
+}
+
+// SetSMTPProvider sets the tenant SMTP provider for per-tenant mailer selection.
+func (cs *CampaignSender) SetSMTPProvider(p TenantSMTPProvider) {
+	cs.smtpProvider = p
+}
+
+// mailerForTenant returns a tenant-specific SMTPMailer if configured, otherwise the global mailer.
+func (cs *CampaignSender) mailerForTenant(tenantID string) (Mailer, int) {
+	if cs.smtpProvider != nil {
+		host, port, user, pass, from, fromName, rateMS, err := cs.smtpProvider.GetSMTPConfig(tenantID)
+		if err == nil && host != "" {
+			return &SMTPMailer{Host: host, Port: port, User: user, Password: pass, From: from, FromName: fromName}, rateMS
+		}
+	}
+	return cs.mailer, cs.rateMS
 }
 
 func (cs *CampaignSender) Start() {
 	go func() {
-		for campaignID := range cs.queue {
-			cs.processCampaign(campaignID)
+		for req := range cs.queue {
+			cs.processCampaign(req.campaignID, req.tenantID)
 		}
 	}()
 }
@@ -92,16 +119,18 @@ func (cs *CampaignSender) StartSync() {
 	cs.syncMode = true
 }
 
-func (cs *CampaignSender) Enqueue(campaignID string) {
+func (cs *CampaignSender) Enqueue(campaignID string, tenantID string) {
 	if cs.syncMode {
-		cs.processCampaign(campaignID)
+		cs.processCampaign(campaignID, tenantID)
 		return
 	}
-	cs.queue <- campaignID
+	cs.queue <- sendRequest{campaignID: campaignID, tenantID: tenantID}
 }
 
-func (cs *CampaignSender) processCampaign(campaignID string) {
-	campaign, err := cs.store.GetCampaignByID(campaignID)
+func (cs *CampaignSender) processCampaign(campaignID string, tenantID string) {
+	store := cs.store.ForTenant(tenantID)
+
+	campaign, err := store.GetCampaignByID(campaignID)
 	if err != nil {
 		log.Printf("Campaign %s: failed to load: %v", campaignID, err)
 		return
@@ -113,34 +142,36 @@ func (cs *CampaignSender) processCampaign(campaignID string) {
 	}
 
 	// Set status to sending
-	if err := cs.store.SetCampaignStatus(campaignID, "sending"); err != nil {
+	if err := store.SetCampaignStatus(campaignID, "sending"); err != nil {
 		log.Printf("Campaign %s: failed to set sending status: %v", campaignID, err)
 		return
 	}
 
 	// Prepare recipients (deduplicate, skip unsubscribed)
-	count, err := cs.store.PrepareCampaignRecipients(campaignID)
+	count, err := store.PrepareCampaignRecipients(campaignID)
 	if err != nil {
 		log.Printf("Campaign %s: failed to prepare recipients: %v", campaignID, err)
-		cs.store.SetCampaignStatus(campaignID, "failed")
+		store.SetCampaignStatus(campaignID, "failed")
 		return
 	}
 	log.Printf("Campaign %s: prepared %d recipients", campaignID, count)
 
 	// Get recipients
-	recipients, err := cs.store.GetCampaignRecipients(campaignID)
+	recipients, err := store.GetCampaignRecipients(campaignID)
 	if err != nil {
 		log.Printf("Campaign %s: failed to get recipients: %v", campaignID, err)
-		cs.store.SetCampaignStatus(campaignID, "failed")
+		store.SetCampaignStatus(campaignID, "failed")
 		return
 	}
+
+	mailer, rateMS := cs.mailerForTenant(tenantID)
 
 	allSuccess := true
 	for _, r := range recipients {
 		// Template substitution
-		unsubscribeURL := fmt.Sprintf("%s/unsubscribe/%s", cs.issuer, cs.getUnsubscribeToken(r.ContactID))
+		unsubscribeURL := fmt.Sprintf("%s/unsubscribe/%s", cs.issuer, cs.getUnsubscribeToken(store, r.ContactID))
 		trackingURL := fmt.Sprintf("%s/track/%s", cs.issuer, r.ID)
-		inviteURL := fmt.Sprintf("%s/activate/%s", cs.issuer, cs.getInviteToken(r.ContactID))
+		inviteURL := fmt.Sprintf("%s/activate/%s", cs.issuer, cs.getInviteToken(store, r.ContactID))
 
 		body := campaign.HTMLBody
 		body = strings.ReplaceAll(body, "{{.Name}}", r.ContactName)
@@ -156,46 +187,40 @@ func (cs *CampaignSender) processCampaign(campaignID string) {
 			"List-Unsubscribe": fmt.Sprintf("<%s>", unsubscribeURL),
 		}
 
-		// Use campaign from fields, fall back to mailer defaults
-		fromName := campaign.FromName
-		fromEmail := campaign.FromEmail
-
 		subject := campaign.Subject
-		_ = fromName
-		_ = fromEmail
 
-		if err := cs.mailer.Send(r.ContactEmail, subject, body, headers); err != nil {
+		if err := mailer.Send(r.ContactEmail, subject, body, headers); err != nil {
 			log.Printf("Campaign %s: failed to send to %s: %v", campaignID, r.ContactEmail, err)
-			cs.store.UpdateRecipientStatus(r.ID, "failed", err.Error())
+			store.UpdateRecipientStatus(r.ID, "failed", err.Error())
 			allSuccess = false
 		} else {
-			cs.store.UpdateRecipientStatus(r.ID, "sent", "")
+			store.UpdateRecipientStatus(r.ID, "sent", "")
 		}
 
-		// Rate limiting
-		if cs.rateMS > 0 {
-			time.Sleep(time.Duration(cs.rateMS) * time.Millisecond)
+		// Rate limiting (use tenant-specific rate or global fallback)
+		if rateMS > 0 {
+			time.Sleep(time.Duration(rateMS) * time.Millisecond)
 		}
 	}
 
 	if allSuccess {
-		cs.store.SetCampaignStatus(campaignID, "sent")
+		store.SetCampaignStatus(campaignID, "sent")
 	} else {
-		cs.store.SetCampaignStatus(campaignID, "failed")
+		store.SetCampaignStatus(campaignID, "failed")
 	}
 	log.Printf("Campaign %s: sending complete", campaignID)
 }
 
-func (cs *CampaignSender) getUnsubscribeToken(contactID string) string {
-	contact, err := cs.store.GetContactByID(contactID)
+func (cs *CampaignSender) getUnsubscribeToken(store *Store, contactID string) string {
+	contact, err := store.GetContactByID(contactID)
 	if err != nil {
 		return ""
 	}
 	return contact.UnsubscribeToken
 }
 
-func (cs *CampaignSender) getInviteToken(contactID string) string {
-	contact, err := cs.store.GetContactByID(contactID)
+func (cs *CampaignSender) getInviteToken(store *Store, contactID string) string {
+	contact, err := store.GetContactByID(contactID)
 	if err != nil || contact.InviteToken == nil {
 		return ""
 	}

@@ -4,6 +4,7 @@ import "time"
 
 type User struct {
 	ID           string    `json:"id"`
+	TenantID     string    `json:"tenant_id"`
 	Email        string    `json:"email"`
 	PasswordHash string    `json:"-"`
 	Name         string    `json:"name"`
@@ -13,6 +14,7 @@ type User struct {
 
 type Client struct {
 	ID           string    `json:"client_id"`
+	TenantID     string    `json:"tenant_id"`
 	SecretHash   string    `json:"-"`
 	Name         string    `json:"name"`
 	RedirectURIs []string  `json:"redirect_uris"`

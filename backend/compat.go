@@ -16,6 +16,7 @@ import (
 // --- Type aliases for simple response types ---
 
 type TokenService = iam.TokenService
+type TokenRegistry = iam.TokenRegistry
 type Mailer = marketing.Mailer
 type TokenResponse = iam.TokenResponse
 type ErrorResponse = iam.ErrorResponse
@@ -46,6 +47,11 @@ func NewStore(dbPath string) (*Store, error) {
 	return &Store{Store: iamStore, mkt: mktStore}, nil
 }
 
+// ForTenant returns a Store scoped to the given tenant.
+func (s *Store) ForTenant(tenantID string) *Store {
+	return &Store{Store: s.Store.ForTenant(tenantID), mkt: s.mkt.ForTenant(tenantID)}
+}
+
 // Marketing methods delegated to the marketing store
 func (s *Store) GetContactByEmail(email string) (*marketing.Contact, error) {
 	return s.mkt.GetContactByEmail(email)
@@ -68,17 +74,22 @@ func NewTokenService(key *rsa.PrivateKey, issuer string) *iam.TokenService {
 // ensure the marketing handler always has the current sender.
 
 type Handler struct {
-	iam    *iam.Handler
-	mkt    *marketing.Handler
-	sender *marketing.CampaignSender
+	iam      *iam.Handler
+	mkt      *marketing.Handler
+	sender   *marketing.CampaignSender
+	registry *iam.TokenRegistry
 }
 
 func NewHandler(store *Store, tokens *iam.TokenService, issuer string) *Handler {
-	iamH := iam.NewHandler(store.Store, tokens, issuer)
-	mktH := marketing.NewHandler(store.mkt, store.Store, tokens)
+	// Create a static registry that always returns this token service,
+	// preserving backwards compatibility with tests that use a single key.
+	registry := iam.NewStaticTokenRegistry(tokens)
+	iamH := iam.NewHandler(store.Store, registry, issuer)
+	mktH := marketing.NewHandler(store.mkt, store.Store, registry)
 	return &Handler{
-		iam: iamH,
-		mkt: mktH,
+		iam:      iamH,
+		mkt:      mktH,
+		registry: registry,
 	}
 }
 

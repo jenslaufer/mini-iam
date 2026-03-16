@@ -18,31 +18,33 @@ func newTestDB(t *testing.T) *sql.DB {
 	schema := `
 	PRAGMA foreign_keys = ON;
 	CREATE TABLE users (
-		id TEXT PRIMARY KEY, email TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL,
-		name TEXT NOT NULL, role TEXT NOT NULL DEFAULT 'user', created_at DATETIME NOT NULL
+		id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL DEFAULT '', email TEXT NOT NULL, password_hash TEXT NOT NULL,
+		name TEXT NOT NULL, role TEXT NOT NULL DEFAULT 'user', created_at DATETIME NOT NULL,
+		UNIQUE(tenant_id, email)
 	);
 	CREATE TABLE clients (
-		id TEXT PRIMARY KEY, secret_hash TEXT NOT NULL, name TEXT NOT NULL,
+		id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL DEFAULT '', secret_hash TEXT NOT NULL, name TEXT NOT NULL,
 		redirect_uris TEXT NOT NULL, created_at DATETIME NOT NULL
 	);
 	CREATE TABLE auth_codes (
-		code TEXT PRIMARY KEY, client_id TEXT NOT NULL, user_id TEXT NOT NULL,
+		code TEXT PRIMARY KEY, tenant_id TEXT NOT NULL DEFAULT '', client_id TEXT NOT NULL, user_id TEXT NOT NULL,
 		redirect_uri TEXT NOT NULL, scope TEXT NOT NULL DEFAULT '', nonce TEXT NOT NULL DEFAULT '',
 		code_challenge TEXT NOT NULL DEFAULT '', code_challenge_method TEXT NOT NULL DEFAULT '',
 		expires_at DATETIME NOT NULL, used INTEGER NOT NULL DEFAULT 0
 	);
 	CREATE TABLE refresh_tokens (
-		token TEXT PRIMARY KEY, client_id TEXT NOT NULL, user_id TEXT NOT NULL,
+		token TEXT PRIMARY KEY, tenant_id TEXT NOT NULL DEFAULT '', client_id TEXT NOT NULL, user_id TEXT NOT NULL,
 		scope TEXT NOT NULL DEFAULT '', expires_at DATETIME NOT NULL, revoked INTEGER NOT NULL DEFAULT 0
 	);
 	CREATE TABLE keys (
-		id TEXT PRIMARY KEY, private_key_pem TEXT NOT NULL, created_at DATETIME NOT NULL
+		id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL DEFAULT '', private_key_pem TEXT NOT NULL, created_at DATETIME NOT NULL
 	);
 	CREATE TABLE contacts (
-		id TEXT PRIMARY KEY, email TEXT UNIQUE NOT NULL, name TEXT NOT NULL DEFAULT '',
+		id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL DEFAULT '', email TEXT NOT NULL, name TEXT NOT NULL DEFAULT '',
 		user_id TEXT REFERENCES users(id), unsubscribed INTEGER NOT NULL DEFAULT 0,
 		unsubscribe_token TEXT UNIQUE NOT NULL, invite_token TEXT UNIQUE,
-		consent_source TEXT NOT NULL, consent_at DATETIME NOT NULL, created_at DATETIME NOT NULL
+		consent_source TEXT NOT NULL, consent_at DATETIME NOT NULL, created_at DATETIME NOT NULL,
+		UNIQUE(tenant_id, email)
 	);
 	`
 	if _, err := db.Exec(schema); err != nil {

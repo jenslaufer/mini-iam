@@ -4,6 +4,7 @@ import "time"
 
 type Contact struct {
 	ID               string    `json:"id"`
+	TenantID         string    `json:"tenant_id"`
 	Email            string    `json:"email"`
 	Name             string    `json:"name"`
 	UserID           *string   `json:"user_id,omitempty"`
@@ -24,6 +25,7 @@ type ContactImport struct {
 
 type Segment struct {
 	ID           string    `json:"id"`
+	TenantID     string    `json:"tenant_id"`
 	Name         string    `json:"name"`
 	Description  string    `json:"description"`
 	ContactCount int       `json:"contact_count,omitempty"`
@@ -32,6 +34,7 @@ type Segment struct {
 
 type Campaign struct {
 	ID         string     `json:"id"`
+	TenantID   string     `json:"tenant_id"`
 	Subject    string     `json:"subject"`
 	HTMLBody   string     `json:"html_body"`
 	FromName   string     `json:"from_name"`
