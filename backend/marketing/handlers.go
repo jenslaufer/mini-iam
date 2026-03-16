@@ -7,18 +7,18 @@ import (
 	"strings"
 
 	"github.com/jenslaufer/launch-kit/iam"
-	"github.com/jenslaufer/launch-kit/tenant"
+	"github.com/jenslaufer/launch-kit/tenantctx"
 )
 
 type Handler struct {
 	store    *Store
 	iamStore *iam.Store
-	tokens   *iam.TokenService
+	registry *iam.TokenRegistry
 	sender   *CampaignSender
 }
 
-func NewHandler(store *Store, iamStore *iam.Store, tokens *iam.TokenService) *Handler {
-	return &Handler{store: store, iamStore: iamStore, tokens: tokens}
+func NewHandler(store *Store, iamStore *iam.Store, registry *iam.TokenRegistry) *Handler {
+	return &Handler{store: store, iamStore: iamStore, registry: registry}
 }
 
 func (h *Handler) SetSender(sender *CampaignSender) {
@@ -27,11 +27,11 @@ func (h *Handler) SetSender(sender *CampaignSender) {
 
 // tenantStore returns a marketing store scoped to the request's tenant.
 func (h *Handler) tenantStore(r *http.Request) *Store {
-	return h.store.ForTenant(tenant.FromContext(r.Context()))
+	return h.store.ForTenant(tenantctx.FromContext(r.Context()))
 }
 
 func (h *Handler) requireAdmin(w http.ResponseWriter, r *http.Request) bool {
-	_, ok := iam.CheckAdmin(h.tokens, h.iamStore, w, r)
+	_, ok := iam.CheckAdmin(h.registry, h.iamStore, w, r)
 	return ok
 }
 
@@ -421,7 +421,7 @@ func (h *Handler) AdminCampaignByID(w http.ResponseWriter, r *http.Request) {
 			iam.WriteError(w, http.StatusInternalServerError, "server_error", "email sender not configured")
 			return
 		}
-		h.sender.Enqueue(campaignID, tenant.FromContext(r.Context()))
+		h.sender.Enqueue(campaignID, tenantctx.FromContext(r.Context()))
 		iam.WriteJSON(w, http.StatusAccepted, map[string]string{"status": "sending"})
 		return
 	}

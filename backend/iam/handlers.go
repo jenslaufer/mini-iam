@@ -1,6 +1,7 @@
 package iam
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -8,22 +9,35 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/jenslaufer/launch-kit/tenant"
+	"github.com/jenslaufer/launch-kit/tenantctx"
 )
 
 type Handler struct {
-	Store  *Store
-	Tokens *TokenService
-	Issuer string
+	Store    *Store
+	Registry *TokenRegistry
+	Issuer   string
 }
 
-func NewHandler(store *Store, tokens *TokenService, issuer string) *Handler {
-	return &Handler{Store: store, Tokens: tokens, Issuer: issuer}
+func NewHandler(store *Store, registry *TokenRegistry, issuer string) *Handler {
+	return &Handler{Store: store, Registry: registry, Issuer: issuer}
 }
 
 // tenantStore returns a store scoped to the request's tenant.
 func (h *Handler) tenantStore(r *http.Request) *Store {
-	return h.Store.ForTenant(tenant.FromContext(r.Context()))
+	return h.Store.ForTenant(tenantctx.FromContext(r.Context()))
+}
+
+// tenantTokens returns a TokenService for the request's tenant.
+func (h *Handler) tenantTokens(r *http.Request) (*TokenService, error) {
+	return h.Registry.ForTenant(tenantctx.FromContext(r.Context()), tenantctx.SlugFromContext(r.Context()))
+}
+
+// tenantIssuer returns the issuer URL for the request's tenant.
+func (h *Handler) tenantIssuer(r *http.Request) string {
+	if slug := tenantctx.SlugFromContext(r.Context()); slug != "" {
+		return h.Issuer + "/t/" + slug
+	}
+	return h.Issuer
 }
 
 // --- Helpers ---
@@ -111,14 +125,20 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tenantID := tenant.FromContext(r.Context())
-	accessToken, err := h.Tokens.CreateAccessToken(user, h.Issuer, tenantID)
+	ts, err := h.tenantTokens(r)
+	if err != nil {
+		WriteError(w, http.StatusInternalServerError, "server_error", "failed to load tenant keys")
+		return
+	}
+
+	tenantID := tenantctx.FromContext(r.Context())
+	accessToken, err := ts.CreateAccessToken(user, ts.issuer, tenantID)
 	if err != nil {
 		WriteError(w, http.StatusInternalServerError, "server_error", "failed to create access token")
 		return
 	}
 
-	idToken, err := h.Tokens.CreateIDToken(user, h.Issuer, "", tenantID)
+	idToken, err := ts.CreateIDToken(user, ts.issuer, "", tenantID)
 	if err != nil {
 		WriteError(w, http.StatusInternalServerError, "server_error", "failed to create id token")
 		return
@@ -152,7 +172,7 @@ input[type=email],input[type=password]{width:100%%;padding:0.5rem;margin-top:0.2
 button{width:100%%;padding:0.75rem;margin-top:1.5rem;background:#2563eb;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:1rem}
 button:hover{background:#1d4ed8}
 </style></head><body>
-<form method="POST" action="/authorize">
+<form method="POST" action="">
 <h2>Sign In</h2>
 <input type="hidden" name="client_id" value="%s">
 <input type="hidden" name="redirect_uri" value="%s">
@@ -337,14 +357,20 @@ func (h *Handler) tokenAuthorizationCode(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	tenantID := tenant.FromContext(r.Context())
-	accessToken, err := h.Tokens.CreateAccessToken(user, ac.ClientID, tenantID)
+	ts, err := h.tenantTokens(r)
+	if err != nil {
+		WriteError(w, http.StatusInternalServerError, "server_error", "failed to load tenant keys")
+		return
+	}
+
+	tenantID := tenantctx.FromContext(r.Context())
+	accessToken, err := ts.CreateAccessToken(user, ac.ClientID, tenantID)
 	if err != nil {
 		WriteError(w, http.StatusInternalServerError, "server_error", "failed to create access token")
 		return
 	}
 
-	idToken, err := h.Tokens.CreateIDToken(user, ac.ClientID, ac.Nonce, tenantID)
+	idToken, err := ts.CreateIDToken(user, ac.ClientID, ac.Nonce, tenantID)
 	if err != nil {
 		WriteError(w, http.StatusInternalServerError, "server_error", "failed to create id token")
 		return
@@ -388,19 +414,25 @@ func (h *Handler) tokenRefreshToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	audience := rt.ClientID
-	if audience == "" {
-		audience = h.Issuer
+	ts, err := h.tenantTokens(r)
+	if err != nil {
+		WriteError(w, http.StatusInternalServerError, "server_error", "failed to load tenant keys")
+		return
 	}
 
-	tenantID := tenant.FromContext(r.Context())
-	accessToken, err := h.Tokens.CreateAccessToken(user, audience, tenantID)
+	audience := rt.ClientID
+	if audience == "" {
+		audience = ts.issuer
+	}
+
+	tenantID := tenantctx.FromContext(r.Context())
+	accessToken, err := ts.CreateAccessToken(user, audience, tenantID)
 	if err != nil {
 		WriteError(w, http.StatusInternalServerError, "server_error", "failed to create access token")
 		return
 	}
 
-	idToken, err := h.Tokens.CreateIDToken(user, audience, "", tenantID)
+	idToken, err := ts.CreateIDToken(user, audience, "", tenantID)
 	if err != nil {
 		WriteError(w, http.StatusInternalServerError, "server_error", "failed to create id token")
 		return
@@ -434,7 +466,13 @@ func (h *Handler) UserInfo(w http.ResponseWriter, r *http.Request) {
 	}
 	tokenStr := strings.TrimPrefix(auth, "Bearer ")
 
-	claims, err := h.Tokens.ValidateAccessToken(tokenStr)
+	ts, err := h.tenantTokens(r)
+	if err != nil {
+		WriteError(w, http.StatusInternalServerError, "server_error", "failed to load tenant keys")
+		return
+	}
+
+	claims, err := ts.ValidateAccessToken(tokenStr)
 	if err != nil {
 		WriteError(w, http.StatusUnauthorized, "invalid_token", "invalid or expired token")
 		return
@@ -457,7 +495,12 @@ func (h *Handler) UserInfo(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) JWKS(w http.ResponseWriter, r *http.Request) {
-	data, err := h.Tokens.JWKSBytes()
+	ts, err := h.tenantTokens(r)
+	if err != nil {
+		WriteError(w, http.StatusInternalServerError, "server_error", "failed to load tenant keys")
+		return
+	}
+	data, err := ts.JWKSBytes()
 	if err != nil {
 		WriteError(w, http.StatusInternalServerError, "server_error", "failed to generate JWKS")
 		return
@@ -467,14 +510,15 @@ func (h *Handler) JWKS(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) Discovery(w http.ResponseWriter, r *http.Request) {
+	base := h.tenantIssuer(r)
 	doc := OIDCDiscovery{
-		Issuer:                            h.Issuer,
-		AuthorizationEndpoint:             h.Issuer + "/authorize",
-		TokenEndpoint:                     h.Issuer + "/token",
-		UserinfoEndpoint:                  h.Issuer + "/userinfo",
-		JwksURI:                           h.Issuer + "/jwks",
-		RevocationEndpoint:                h.Issuer + "/revoke",
-		RegistrationEndpoint:              h.Issuer + "/clients",
+		Issuer:                            base,
+		AuthorizationEndpoint:             base + "/authorize",
+		TokenEndpoint:                     base + "/token",
+		UserinfoEndpoint:                  base + "/userinfo",
+		JwksURI:                           base + "/jwks",
+		RevocationEndpoint:                base + "/revoke",
+		RegistrationEndpoint:              base + "/clients",
 		ScopesSupported:                   []string{"openid", "profile", "email"},
 		ResponseTypesSupported:            []string{"code"},
 		GrantTypesSupported:               []string{"authorization_code", "refresh_token"},
@@ -553,14 +597,21 @@ func (h *Handler) CreateClient(w http.ResponseWriter, r *http.Request) {
 // CheckAdmin validates the Bearer token and checks the admin role.
 // Returns the admin User and true on success, writes an error and returns false on failure.
 // Used by both IAM and marketing handlers.
-func CheckAdmin(tokens *TokenService, store *Store, w http.ResponseWriter, r *http.Request) (*User, bool) {
+func CheckAdmin(registry *TokenRegistry, store *Store, w http.ResponseWriter, r *http.Request) (*User, bool) {
 	auth := r.Header.Get("Authorization")
 	if !strings.HasPrefix(auth, "Bearer ") {
 		WriteError(w, http.StatusUnauthorized, "invalid_token", "Bearer token required")
 		return nil, false
 	}
 	tokenStr := strings.TrimPrefix(auth, "Bearer ")
-	claims, err := tokens.ValidateAccessToken(tokenStr)
+
+	ts, err := registry.ForTenant(tenantctx.FromContext(r.Context()), tenantctx.SlugFromContext(r.Context()))
+	if err != nil {
+		WriteError(w, http.StatusInternalServerError, "server_error", "failed to load tenant keys")
+		return nil, false
+	}
+
+	claims, err := ts.ValidateAccessToken(tokenStr)
 	if err != nil {
 		WriteError(w, http.StatusUnauthorized, "invalid_token", "invalid or expired token")
 		return nil, false
@@ -573,7 +624,7 @@ func CheckAdmin(tokens *TokenService, store *Store, w http.ResponseWriter, r *ht
 
 	// Validate tenant matches
 	tokenTenantID, _ := claims["tid"].(string)
-	requestTenantID := tenant.FromContext(r.Context())
+	requestTenantID := tenantctx.FromContext(r.Context())
 	if tokenTenantID != requestTenantID {
 		WriteError(w, http.StatusForbidden, "invalid_token", "token tenant mismatch")
 		return nil, false
@@ -589,8 +640,71 @@ func CheckAdmin(tokens *TokenService, store *Store, w http.ResponseWriter, r *ht
 	return user, true
 }
 
+// CheckAdminCrossTenant validates the Bearer token as admin without requiring
+// the token's tenant to match the request's tenant context. Used for global
+// admin endpoints like tenant import where the caller is an admin of any tenant.
+func CheckAdminCrossTenant(registry *TokenRegistry, store *Store, w http.ResponseWriter, r *http.Request) (*User, bool) {
+	auth := r.Header.Get("Authorization")
+	if !strings.HasPrefix(auth, "Bearer ") {
+		WriteError(w, http.StatusUnauthorized, "invalid_token", "Bearer token required")
+		return nil, false
+	}
+	tokenStr := strings.TrimPrefix(auth, "Bearer ")
+
+	// Extract tid claim from token without verification to find the right key.
+	tidVal := extractClaim(tokenStr, "tid")
+	tid, _ := tidVal.(string)
+	if tid == "" {
+		WriteError(w, http.StatusUnauthorized, "invalid_token", "token has no tenant claim")
+		return nil, false
+	}
+
+	ts, err := registry.ForTenant(tid, "")
+	if err != nil {
+		WriteError(w, http.StatusInternalServerError, "server_error", "failed to load tenant keys")
+		return nil, false
+	}
+
+	claims, err := ts.ValidateAccessToken(tokenStr)
+	if err != nil {
+		WriteError(w, http.StatusUnauthorized, "invalid_token", "invalid or expired token")
+		return nil, false
+	}
+	role, _ := claims["role"].(string)
+	if role != "admin" {
+		WriteError(w, http.StatusForbidden, "insufficient_scope", "admin role required")
+		return nil, false
+	}
+
+	sub, _ := claims["sub"].(string)
+	scopedStore := store.ForTenant(tid)
+	user, err := scopedStore.GetUserByID(sub)
+	if err != nil {
+		WriteError(w, http.StatusUnauthorized, "invalid_token", "user not found")
+		return nil, false
+	}
+	return user, true
+}
+
+// extractClaim parses a JWT without verification to read a specific claim.
+func extractClaim(tokenStr, claimName string) interface{} {
+	parts := strings.Split(tokenStr, ".")
+	if len(parts) != 3 {
+		return nil
+	}
+	decoded, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return nil
+	}
+	var claims map[string]interface{}
+	if err := json.Unmarshal(decoded, &claims); err != nil {
+		return nil
+	}
+	return claims[claimName]
+}
+
 func (h *Handler) requireAdmin(w http.ResponseWriter, r *http.Request) (*User, bool) {
-	return CheckAdmin(h.Tokens, h.Store, w, r)
+	return CheckAdmin(h.Registry, h.Store, w, r)
 }
 
 func (h *Handler) AdminListUsers(w http.ResponseWriter, r *http.Request) {
@@ -655,7 +769,13 @@ func (h *Handler) AdminUserByID(w http.ResponseWriter, r *http.Request) {
 	case http.MethodDelete:
 		auth := r.Header.Get("Authorization")
 		tokenStr := strings.TrimPrefix(auth, "Bearer ")
-		claims, _ := h.Tokens.ValidateAccessToken(tokenStr)
+
+		ts, err := h.tenantTokens(r)
+		if err != nil {
+			WriteError(w, http.StatusInternalServerError, "server_error", "failed to load tenant keys")
+			return
+		}
+		claims, _ := ts.ValidateAccessToken(tokenStr)
 		adminID, _ := claims["sub"].(string)
 
 		if id == adminID {

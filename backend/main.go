@@ -57,6 +57,27 @@ func main() {
 		log.Printf("Admin account seeded: %s", adminEmail)
 	}
 
+	// Startup import from TENANT_CONFIG env var
+	if tenantConfigPath := os.Getenv("TENANT_CONFIG"); tenantConfigPath != "" {
+		data, err := os.ReadFile(tenantConfigPath)
+		if err != nil {
+			log.Fatalf("Failed to read TENANT_CONFIG file %s: %v", tenantConfigPath, err)
+		}
+		var cfg tenant.ImportConfig
+		if err := json.Unmarshal(data, &cfg); err != nil {
+			log.Fatalf("Failed to parse TENANT_CONFIG: %v", err)
+		}
+		result, err := tenant.ImportTenantConfig(tenantStore, iamStore, marketingStore, cfg)
+		if err != nil {
+			log.Fatalf("Failed to import tenant config: %v", err)
+		}
+		if result.Skipped {
+			log.Printf("Tenant %q already exists (id: %s), skipped import", cfg.Slug, result.TenantID)
+		} else {
+			log.Printf("Tenant %q imported (id: %s)", cfg.Slug, result.TenantID)
+		}
+	}
+
 	// SMTP configuration
 	smtpHost := os.Getenv("SMTP_HOST")
 	smtpPort := envOr("SMTP_PORT", "587")
@@ -66,12 +87,13 @@ func main() {
 	smtpFromName := envOr("SMTP_FROM_NAME", "launch-kit")
 	smtpRateMS, _ := strconv.Atoi(envOr("SMTP_RATE_MS", "100"))
 
-	rsaKey, err := scopedIAM.LoadOrCreateRSAKey()
-	if err != nil {
+	// Eagerly load RSA key for default tenant so startup fails fast on key issues
+	if _, err := scopedIAM.LoadOrCreateRSAKey(); err != nil {
 		log.Fatalf("Failed to load/create RSA key: %v", err)
 	}
 
-	tokenService := iam.NewTokenService(rsaKey, issuer)
+	// Per-tenant token registry (lazily loads RSA keys per tenant)
+	registry := iam.NewTokenRegistry(iamStore, issuer)
 
 	// Initialize mailer
 	var mailer marketing.Mailer
@@ -90,12 +112,13 @@ func main() {
 		log.Println("No SMTP_HOST configured, using log-only mailer")
 	}
 
-	// Start campaign sender worker
+	// Start campaign sender worker (with per-tenant SMTP support)
 	sender := marketing.NewCampaignSender(marketingStore, mailer, issuer, smtpRateMS)
+	sender.SetSMTPProvider(tenantStore)
 	sender.Start()
 
-	iamHandler := iam.NewHandler(iamStore, tokenService, issuer)
-	marketingHandler := marketing.NewHandler(marketingStore, iamStore, tokenService)
+	iamHandler := iam.NewHandler(iamStore, registry, issuer)
+	marketingHandler := marketing.NewHandler(marketingStore, iamStore, registry)
 	marketingHandler.SetSender(sender)
 
 	mux := http.NewServeMux()
@@ -129,8 +152,9 @@ func main() {
 	mux.HandleFunc("/unsubscribe/", marketingHandler.Unsubscribe)
 
 	// Tenant management API (admin-protected)
+	exportImportHandler := tenant.NewExportImportHandler(tenantStore, iamStore, marketingStore, registry)
 	mux.HandleFunc("/admin/tenants", func(w http.ResponseWriter, r *http.Request) {
-		if _, ok := iam.CheckAdmin(tokenService, iamStore, w, r); !ok {
+		if _, ok := iam.CheckAdmin(registry, iamStore, w, r); !ok {
 			return
 		}
 		switch r.Method {
@@ -171,35 +195,10 @@ func main() {
 			iam.WriteError(w, http.StatusMethodNotAllowed, "invalid_request", "method not allowed")
 		}
 	})
-	mux.HandleFunc("/admin/tenants/", func(w http.ResponseWriter, r *http.Request) {
-		if _, ok := iam.CheckAdmin(tokenService, iamStore, w, r); !ok {
-			return
-		}
-		id := strings.TrimPrefix(r.URL.Path, "/admin/tenants/")
-		if id == "" {
-			iam.WriteError(w, http.StatusBadRequest, "invalid_request", "tenant id required")
-			return
-		}
-		switch r.Method {
-		case http.MethodGet:
-			t, err := tenantStore.GetByID(id)
-			if err != nil {
-				iam.WriteError(w, http.StatusNotFound, "not_found", "tenant not found")
-				return
-			}
-			iam.WriteJSON(w, http.StatusOK, t)
-		case http.MethodDelete:
-			if err := tenantStore.Delete(id); err != nil {
-				iam.WriteError(w, http.StatusNotFound, "not_found", "tenant not found")
-				return
-			}
-			iam.WriteJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
-		default:
-			iam.WriteError(w, http.StatusMethodNotAllowed, "invalid_request", "method not allowed")
-		}
-	})
+	mux.HandleFunc("/admin/tenants/import", exportImportHandler.Import)
+	mux.HandleFunc("/admin/tenants/", exportImportHandler.ExportOrDelete)
 
-	// Wrap with tenant middleware, then CORS
+	// Wrap with tenant middleware (path prefix + X-Tenant header), then CORS
 	handler := CORSMiddleware(corsOrigins)(tenant.Middleware(tenantStore, defaultTenantID)(mux))
 
 	log.Printf("launch-kit starting on :%s (issuer: %s)", port, issuer)
@@ -372,6 +371,13 @@ func migrate(db *sql.DB) error {
 	db.Exec("ALTER TABLE keys ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''")
 	db.Exec("ALTER TABLE segments ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''")
 	db.Exec("ALTER TABLE campaigns ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''")
+	db.Exec("ALTER TABLE tenants ADD COLUMN smtp_host TEXT NOT NULL DEFAULT ''")
+	db.Exec("ALTER TABLE tenants ADD COLUMN smtp_port TEXT NOT NULL DEFAULT ''")
+	db.Exec("ALTER TABLE tenants ADD COLUMN smtp_user TEXT NOT NULL DEFAULT ''")
+	db.Exec("ALTER TABLE tenants ADD COLUMN smtp_password TEXT NOT NULL DEFAULT ''")
+	db.Exec("ALTER TABLE tenants ADD COLUMN smtp_from TEXT NOT NULL DEFAULT ''")
+	db.Exec("ALTER TABLE tenants ADD COLUMN smtp_from_name TEXT NOT NULL DEFAULT ''")
+	db.Exec("ALTER TABLE tenants ADD COLUMN smtp_rate_ms INTEGER NOT NULL DEFAULT 0")
 
 	return nil
 }

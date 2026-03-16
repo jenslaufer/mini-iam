@@ -57,6 +57,11 @@ func (m *LogMailer) Send(to, subject, htmlBody string, headers map[string]string
 	return nil
 }
 
+// TenantSMTPProvider looks up SMTP config for a tenant. Implemented by tenant.Store.
+type TenantSMTPProvider interface {
+	GetSMTPConfig(tenantID string) (host, port, user, password, from, fromName string, rateMS int, err error)
+}
+
 // --- Campaign Sender (background worker) ---
 
 type sendRequest struct {
@@ -65,12 +70,13 @@ type sendRequest struct {
 }
 
 type CampaignSender struct {
-	store    *Store
-	mailer   Mailer
-	issuer   string
-	rateMS   int
-	queue    chan sendRequest
-	syncMode bool
+	store          *Store
+	mailer         Mailer
+	smtpProvider   TenantSMTPProvider
+	issuer         string
+	rateMS         int
+	queue          chan sendRequest
+	syncMode       bool
 }
 
 func NewCampaignSender(store *Store, mailer Mailer, issuer string, rateMS int) *CampaignSender {
@@ -81,6 +87,22 @@ func NewCampaignSender(store *Store, mailer Mailer, issuer string, rateMS int) *
 		rateMS: rateMS,
 		queue:  make(chan sendRequest, 100),
 	}
+}
+
+// SetSMTPProvider sets the tenant SMTP provider for per-tenant mailer selection.
+func (cs *CampaignSender) SetSMTPProvider(p TenantSMTPProvider) {
+	cs.smtpProvider = p
+}
+
+// mailerForTenant returns a tenant-specific SMTPMailer if configured, otherwise the global mailer.
+func (cs *CampaignSender) mailerForTenant(tenantID string) (Mailer, int) {
+	if cs.smtpProvider != nil {
+		host, port, user, pass, from, fromName, rateMS, err := cs.smtpProvider.GetSMTPConfig(tenantID)
+		if err == nil && host != "" {
+			return &SMTPMailer{Host: host, Port: port, User: user, Password: pass, From: from, FromName: fromName}, rateMS
+		}
+	}
+	return cs.mailer, cs.rateMS
 }
 
 func (cs *CampaignSender) Start() {
@@ -142,6 +164,8 @@ func (cs *CampaignSender) processCampaign(campaignID string, tenantID string) {
 		return
 	}
 
+	mailer, rateMS := cs.mailerForTenant(tenantID)
+
 	allSuccess := true
 	for _, r := range recipients {
 		// Template substitution
@@ -163,15 +187,9 @@ func (cs *CampaignSender) processCampaign(campaignID string, tenantID string) {
 			"List-Unsubscribe": fmt.Sprintf("<%s>", unsubscribeURL),
 		}
 
-		// Use campaign from fields, fall back to mailer defaults
-		fromName := campaign.FromName
-		fromEmail := campaign.FromEmail
-
 		subject := campaign.Subject
-		_ = fromName
-		_ = fromEmail
 
-		if err := cs.mailer.Send(r.ContactEmail, subject, body, headers); err != nil {
+		if err := mailer.Send(r.ContactEmail, subject, body, headers); err != nil {
 			log.Printf("Campaign %s: failed to send to %s: %v", campaignID, r.ContactEmail, err)
 			store.UpdateRecipientStatus(r.ID, "failed", err.Error())
 			allSuccess = false
@@ -179,9 +197,9 @@ func (cs *CampaignSender) processCampaign(campaignID string, tenantID string) {
 			store.UpdateRecipientStatus(r.ID, "sent", "")
 		}
 
-		// Rate limiting
-		if cs.rateMS > 0 {
-			time.Sleep(time.Duration(cs.rateMS) * time.Millisecond)
+		// Rate limiting (use tenant-specific rate or global fallback)
+		if rateMS > 0 {
+			time.Sleep(time.Duration(rateMS) * time.Millisecond)
 		}
 	}
 

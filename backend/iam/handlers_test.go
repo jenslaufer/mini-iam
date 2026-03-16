@@ -41,7 +41,8 @@ func newHandlerEnv(t *testing.T) *testEnv {
 		t.Fatal(err)
 	}
 	tokens := NewTokenService(key, "http://test-issuer")
-	h := NewHandler(store, tokens, "http://test-issuer")
+	registry := NewStaticTokenRegistry(tokens)
+	h := NewHandler(store, registry, "http://test-issuer")
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", h.Health)

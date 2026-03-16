@@ -34,9 +34,10 @@ func newHandlerEnv(t *testing.T) *testHandlerEnv {
 		t.Fatal(err)
 	}
 	tokens := iam.NewTokenService(key, "http://test-issuer")
+	registry := iam.NewStaticTokenRegistry(tokens)
 
-	iamHandler := iam.NewHandler(iamStore, tokens, "http://test-issuer")
-	mktHandler := NewHandler(mktStore, iamStore, tokens)
+	iamHandler := iam.NewHandler(iamStore, registry, "http://test-issuer")
+	mktHandler := NewHandler(mktStore, iamStore, registry)
 
 	sender := NewCampaignSender(mktStore, &LogMailer{}, "http://test-issuer", 0)
 	sender.StartSync()
