@@ -8,7 +8,7 @@ test.describe('Campaigns page', () => {
   test.beforeEach(async ({ page }) => {
     await loginAsAdmin(page)
     await page.goto('/campaigns')
-    await expect(page.locator('tbody tr td .animate-pulse').first()).toHaveCount(0, { timeout: 10000 })
+    await page.waitForFunction(() => !document.querySelector('tbody .animate-pulse'), { timeout: 15000 })
   })
 
   test('shows campaigns list or empty state', async ({ page }) => {

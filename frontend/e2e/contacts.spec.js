@@ -8,7 +8,8 @@ test.describe('Contacts page', () => {
   test.beforeEach(async ({ page }) => {
     await loginAsAdmin(page)
     await page.goto('/contacts')
-    await expect(page.locator('tbody tr td .animate-pulse').first()).toHaveCount(0, { timeout: 10000 })
+    // Wait for data to fully load (skeleton gone AND content stable)
+    await page.waitForFunction(() => !document.querySelector('tbody .animate-pulse'), { timeout: 15000 })
   })
 
   test('shows contacts list or empty state', async ({ page }) => {

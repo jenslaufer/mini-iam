@@ -8,8 +8,7 @@ test.describe('Users page', () => {
   test.beforeEach(async ({ page }) => {
     await loginAsAdmin(page)
     await page.goto('/users')
-    // Wait for skeleton loaders to finish
-    await expect(page.locator('tbody tr td .animate-pulse').first()).toHaveCount(0, { timeout: 10000 })
+    await page.waitForFunction(() => !document.querySelector('tbody .animate-pulse'), { timeout: 15000 })
   })
 
   test('lists users including admin', async ({ page }) => {

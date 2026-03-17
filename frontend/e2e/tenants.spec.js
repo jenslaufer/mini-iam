@@ -34,7 +34,7 @@ test.describe('Tenants page', () => {
     await expect(page.getByText(slug)).toBeVisible()
 
     // Cleanup
-    await deleteTenant(BASE_URL, token, result.id)
+    await deleteTenant(BASE_URL, token, result.tenant_id)
   })
 
   test('can export tenant and response has required fields', async ({ page }) => {
@@ -53,6 +53,61 @@ test.describe('Tenants page', () => {
     expect(exported).toHaveProperty('slug')
     expect(exported).toHaveProperty('name')
     expect(exported.smtp_password).toBeUndefined()
+  })
+
+  test('exported tenant includes registration_enabled field', async ({ page }) => {
+    const token = await getAdminToken(BASE_URL)
+    const res = await fetch(`${BASE_URL}/auth/admin/tenants`, {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+    const tenants = await res.json()
+    const defaultTenant = tenants.find((t) => t.slug === 'default')
+    expect(defaultTenant).toBeDefined()
+    expect(typeof defaultTenant.registration_enabled).toBe('boolean')
+
+    const exported = await exportTenant(BASE_URL, token, defaultTenant.id)
+    expect(exported).toHaveProperty('registration_enabled')
+  })
+
+  test('imported tenant with registration_enabled=true allows registration', async ({ page }) => {
+    const ts = Date.now()
+    const slug = `reg-tenant-${ts}`
+    const token = await getAdminToken(BASE_URL)
+    const config = { slug, name: `Reg Tenant ${ts}`, smtp: {}, clients: [], registration_enabled: true }
+    const result = await importTenant(BASE_URL, token, config)
+
+    // Registration should succeed for this tenant
+    const email = `reg-user-${ts}@example.com`
+    const registerRes = await fetch(`${BASE_URL}/auth/t/${slug}/register`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, password: 'testpass123', name: 'Reg User' }),
+    })
+    expect(registerRes.status).toBe(201)
+
+    // Cleanup
+    await deleteTenant(BASE_URL, token, result.tenant_id)
+  })
+
+  test('imported tenant with registration_enabled=false blocks registration', async ({ page }) => {
+    const ts = Date.now()
+    const slug = `noreg-tenant-${ts}`
+    const token = await getAdminToken(BASE_URL)
+    const config = { slug, name: `No Reg Tenant ${ts}`, smtp: {}, clients: [], registration_enabled: false }
+    const result = await importTenant(BASE_URL, token, config)
+
+    const email = `noreg-user-${ts}@example.com`
+    const registerRes = await fetch(`${BASE_URL}/auth/t/${slug}/register`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, password: 'testpass123', name: 'No Reg User' }),
+    })
+    expect(registerRes.status).toBe(403)
+    const body = await registerRes.json()
+    expect(body.error).toBe('registration_disabled')
+
+    // Cleanup
+    await deleteTenant(BASE_URL, token, result.tenant_id)
   })
 
   test('can delete tenant with confirmation', async ({ page }) => {

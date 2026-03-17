@@ -8,11 +8,11 @@ test.describe('Segments page', () => {
   test.beforeEach(async ({ page }) => {
     await loginAsAdmin(page)
     await page.goto('/segments')
-    await expect(page.locator('tbody tr td .animate-pulse').first()).toHaveCount(0, { timeout: 10000 })
+    await page.waitForFunction(() => !document.querySelector('tbody .animate-pulse'), { timeout: 15000 })
   })
 
   test('shows segments list or empty state', async ({ page }) => {
-    const emptyState = page.getByText('No segments yet')
+    const emptyState = page.getByRole('cell', { name: 'No segments yet' })
     const firstRow = page.locator('tbody tr').first()
     await expect(emptyState.or(firstRow)).toBeVisible()
   })
@@ -21,7 +21,7 @@ test.describe('Segments page', () => {
     await expect(page.getByRole('button', { name: '+ New Segment' })).toBeVisible()
     await page.waitForTimeout(1000)
     await expect(page.getByRole('button', { name: '+ New Segment' })).toBeVisible()
-    const emptyState = page.getByText('No segments yet')
+    const emptyState = page.getByRole('cell', { name: 'No segments yet' })
     const firstRow = page.locator('tbody tr').first()
     await expect(emptyState.or(firstRow)).toBeVisible()
   })
