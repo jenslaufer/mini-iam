@@ -118,7 +118,9 @@ func main() {
 	sender.Start()
 
 	iamHandler := iam.NewHandler(iamStore, registry, issuer)
+	iamHandler.PlatformTenantID = defaultTenantID
 	marketingHandler := marketing.NewHandler(marketingStore, iamStore, registry)
+	marketingHandler.PlatformTenantID = defaultTenantID
 	marketingHandler.SetSender(sender)
 
 	mux := http.NewServeMux()

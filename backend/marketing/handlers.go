@@ -12,10 +12,11 @@ import (
 )
 
 type Handler struct {
-	store    *Store
-	iamStore *iam.Store
-	registry *iam.TokenRegistry
-	sender   *CampaignSender
+	store            *Store
+	iamStore         *iam.Store
+	registry         *iam.TokenRegistry
+	sender           *CampaignSender
+	PlatformTenantID string
 }
 
 func NewHandler(store *Store, iamStore *iam.Store, registry *iam.TokenRegistry) *Handler {
@@ -32,7 +33,7 @@ func (h *Handler) tenantStore(r *http.Request) *Store {
 }
 
 func (h *Handler) requireAdmin(w http.ResponseWriter, r *http.Request) bool {
-	_, ok := iam.CheckAdmin(h.registry, h.iamStore, w, r)
+	_, ok := iam.CheckAdmin(h.registry, h.iamStore, h.PlatformTenantID, w, r)
 	return ok
 }
 

@@ -14,9 +14,10 @@ import (
 )
 
 type Handler struct {
-	Store    *Store
-	Registry *TokenRegistry
-	Issuer   string
+	Store            *Store
+	Registry         *TokenRegistry
+	Issuer           string
+	PlatformTenantID string
 }
 
 func NewHandler(store *Store, registry *TokenRegistry, issuer string) *Handler {
@@ -602,8 +603,9 @@ func (h *Handler) CreateClient(w http.ResponseWriter, r *http.Request) {
 
 // CheckAdmin validates the Bearer token and checks the admin role.
 // Returns the admin User and true on success, writes an error and returns false on failure.
+// Platform admins (token tid == platformTenantID) may access any tenant's admin endpoints.
 // Used by both IAM and marketing handlers.
-func CheckAdmin(registry *TokenRegistry, store *Store, w http.ResponseWriter, r *http.Request) (*User, bool) {
+func CheckAdmin(registry *TokenRegistry, store *Store, platformTenantID string, w http.ResponseWriter, r *http.Request) (*User, bool) {
 	auth := r.Header.Get("Authorization")
 	if !strings.HasPrefix(auth, "Bearer ") {
 		WriteError(w, http.StatusUnauthorized, "invalid_token", "Bearer token required")
@@ -611,7 +613,14 @@ func CheckAdmin(registry *TokenRegistry, store *Store, w http.ResponseWriter, r 
 	}
 	tokenStr := strings.TrimPrefix(auth, "Bearer ")
 
-	ts, err := registry.ForTenant(tenantctx.FromContext(r.Context()), tenantctx.SlugFromContext(r.Context()))
+	// Extract tid to find the correct signing key (platform admin's token
+	// is signed with the platform tenant's key, not the request tenant's key).
+	tokenTenantID, _ := extractClaim(tokenStr, "tid").(string)
+	if tokenTenantID == "" {
+		tokenTenantID = tenantctx.FromContext(r.Context())
+	}
+
+	ts, err := registry.ForTenant(tokenTenantID, "")
 	if err != nil {
 		WriteError(w, http.StatusInternalServerError, "server_error", "failed to load tenant keys")
 		return nil, false
@@ -628,16 +637,16 @@ func CheckAdmin(registry *TokenRegistry, store *Store, w http.ResponseWriter, r 
 		return nil, false
 	}
 
-	// Validate tenant matches
-	tokenTenantID, _ := claims["tid"].(string)
+	// Validate tenant: token must belong to request tenant OR be a platform admin
 	requestTenantID := tenantctx.FromContext(r.Context())
-	if tokenTenantID != requestTenantID {
+	isPlatformAdmin := platformTenantID != "" && tokenTenantID == platformTenantID
+	if tokenTenantID != requestTenantID && !isPlatformAdmin {
 		WriteError(w, http.StatusForbidden, "invalid_token", "token tenant mismatch")
 		return nil, false
 	}
 
 	sub, _ := claims["sub"].(string)
-	scopedStore := store.ForTenant(requestTenantID)
+	scopedStore := store.ForTenant(tokenTenantID)
 	user, err := scopedStore.GetUserByID(sub)
 	if err != nil {
 		WriteError(w, http.StatusUnauthorized, "invalid_token", "user not found")
@@ -715,7 +724,7 @@ func extractClaim(tokenStr, claimName string) interface{} {
 }
 
 func (h *Handler) requireAdmin(w http.ResponseWriter, r *http.Request) (*User, bool) {
-	return CheckAdmin(h.Registry, h.Store, w, r)
+	return CheckAdmin(h.Registry, h.Store, h.PlatformTenantID, w, r)
 }
 
 func (h *Handler) AdminListUsers(w http.ResponseWriter, r *http.Request) {
