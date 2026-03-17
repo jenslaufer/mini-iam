@@ -21,7 +21,7 @@ const form = ref({ name: '', redirectUris: '' })
 
 onMounted(async () => {
   try {
-    clients.value = await getClients()
+    clients.value = (await getClients()) || []
   } catch {
     toast.add('error', 'Failed to load clients')
   } finally {

@@ -12,9 +12,14 @@ test.describe('Campaigns page', () => {
   })
 
   test('shows campaigns list or empty state', async ({ page }) => {
-    const emptyState = page.getByText('No campaigns yet')
-    const firstRow = page.locator('tbody tr').first()
-    await expect(emptyState.or(firstRow)).toBeVisible()
+    await expect(page.locator('tbody tr').first()).toBeVisible()
+  })
+
+  test('content persists after loading', async ({ page }) => {
+    await expect(page.getByRole('button', { name: '+ New Campaign' })).toBeVisible()
+    await page.waitForTimeout(1000)
+    await expect(page.getByRole('button', { name: '+ New Campaign' })).toBeVisible()
+    await expect(page.locator('tbody tr').first()).toBeVisible()
   })
 
   test('can create campaign via modal', async ({ page }) => {

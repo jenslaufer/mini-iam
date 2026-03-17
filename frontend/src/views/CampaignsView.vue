@@ -36,7 +36,9 @@ const previewMode = ref(false)
 
 onMounted(async () => {
   try {
-    ;[campaigns.value, segments.value] = await Promise.all([listCampaigns(), listSegments()])
+    const [c, s] = await Promise.all([listCampaigns(), listSegments()])
+    campaigns.value = c || []
+    segments.value = s || []
   } catch {
     toast.add('error', 'Failed to load campaigns')
   } finally {

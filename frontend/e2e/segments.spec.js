@@ -17,6 +17,15 @@ test.describe('Segments page', () => {
     await expect(emptyState.or(firstRow)).toBeVisible()
   })
 
+  test('content persists after loading', async ({ page }) => {
+    await expect(page.getByRole('button', { name: '+ New Segment' })).toBeVisible()
+    await page.waitForTimeout(1000)
+    await expect(page.getByRole('button', { name: '+ New Segment' })).toBeVisible()
+    const emptyState = page.getByText('No segments yet')
+    const firstRow = page.locator('tbody tr').first()
+    await expect(emptyState.or(firstRow)).toBeVisible()
+  })
+
   test('can create segment via modal', async ({ page }) => {
     const name = `Segment ${Date.now()}`
     const description = 'Created by E2E test'

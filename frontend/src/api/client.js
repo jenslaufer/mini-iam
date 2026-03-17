@@ -26,13 +26,18 @@ apiClient.interceptors.request.use((config) => {
   return config
 })
 
+let logoutInProgress = false
+
 apiClient.interceptors.response.use(
   (res) => res,
   (err) => {
-    if (err.response?.status === 401) {
+    if (err.response?.status === 401 && !logoutInProgress) {
+      logoutInProgress = true
       const auth = useAuthStore()
       auth.logout()
-      router.push('/login')
+      router.push('/login').finally(() => {
+        logoutInProgress = false
+      })
     }
     return Promise.reject(err)
   },

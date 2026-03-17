@@ -16,6 +16,13 @@ test.describe('Users page', () => {
     await expect(page.locator('tbody').getByText('admin@launch-kit.local')).toBeVisible()
   })
 
+  test('content persists after loading', async ({ page }) => {
+    await expect(page.locator('tbody').getByText('admin@launch-kit.local')).toBeVisible()
+    await page.waitForTimeout(1000)
+    await expect(page.locator('tbody').getByText('admin@launch-kit.local')).toBeVisible()
+    await expect(page.getByPlaceholder('Search users...')).toBeVisible()
+  })
+
   test('search filters users', async ({ page }) => {
     // Register a distinct user for this test
     const email = `searchable-${Date.now()}@example.com`
@@ -79,7 +86,7 @@ test.describe('Users page', () => {
     await page.getByRole('button', { name: 'Delete' }).last().click()
 
     // User is gone from the table
-    await expect(page.locator('tbody').getByText(email)).not.toBeVisible()
+    await expect(page.locator('tbody').getByText(email)).toBeHidden({ timeout: 10000 })
     await expect(page.getByText('User deleted')).toBeVisible()
   })
 

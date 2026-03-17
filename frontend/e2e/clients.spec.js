@@ -19,6 +19,15 @@ test.describe('Clients page', () => {
     await expect(emptyState.or(firstRow)).toBeVisible()
   })
 
+  test('content persists after loading', async ({ page }) => {
+    await expect(page.getByRole('button', { name: '+ New Client' })).toBeVisible()
+    await page.waitForTimeout(1000)
+    await expect(page.getByRole('button', { name: '+ New Client' })).toBeVisible()
+    const emptyState = page.getByText('No clients registered yet')
+    const firstRow = page.locator('tbody tr').first()
+    await expect(emptyState.or(firstRow)).toBeVisible()
+  })
+
   test('can create new client via modal', async ({ page }) => {
     const clientName = `Test Client ${Date.now()}`
     let createdClientId
@@ -150,7 +159,7 @@ test.describe('Clients page', () => {
     await page.getByRole('button', { name: 'Delete' }).last().click()
 
     // Client is removed from the table
-    await expect(page.locator('tbody').getByText(clientName)).not.toBeVisible()
+    await expect(page.locator('tbody').getByText(clientName)).toBeHidden({ timeout: 10000 })
     await expect(page.getByText('Client deleted')).toBeVisible()
   })
 

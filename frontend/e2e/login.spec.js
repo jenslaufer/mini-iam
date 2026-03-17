@@ -67,7 +67,7 @@ test.describe('Login page', () => {
     await page.getByPlaceholder('admin@example.com').fill('admin@launch-kit.local')
     await page.getByPlaceholder('••••••••').fill('changeme')
     await page.getByRole('button', { name: 'Sign in' }).click()
-    await expect(page).toHaveURL('/dashboard')
+    await expect(page).toHaveURL('/dashboard', { timeout: 10000 })
 
     // Log out via sidebar button
     await page.getByRole('button', { name: 'Sign out' }).click()

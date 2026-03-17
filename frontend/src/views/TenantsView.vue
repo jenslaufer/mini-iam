@@ -20,7 +20,7 @@ const importedClients = ref(null)
 
 onMounted(async () => {
   try {
-    tenants.value = await getTenants()
+    tenants.value = (await getTenants()) || []
   } catch {
     toast.add('error', 'Failed to load tenants')
   } finally {

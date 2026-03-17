@@ -13,6 +13,21 @@ test.describe('Dashboard', () => {
     await expect(page.getByText('OAuth2 Clients').first()).toBeVisible()
   })
 
+  test('dashboard content persists after loading', async ({ page }) => {
+    // Wait for loading to finish
+    await expect(page.getByText('—')).toHaveCount(0, { timeout: 10000 })
+
+    // Stat cards and quick links must remain visible (regression: flash-then-blank bug)
+    await expect(page.getByText('Total Users')).toBeVisible()
+    await expect(page.getByText('Campaigns', { exact: true }).first()).toBeVisible()
+    await expect(page.getByRole('link', { name: 'Manage Users' })).toBeVisible()
+
+    // Wait a moment to ensure content doesn't disappear
+    await page.waitForTimeout(1000)
+    await expect(page.getByText('Total Users')).toBeVisible()
+    await expect(page.getByRole('link', { name: 'Manage Users' })).toBeVisible()
+  })
+
   test('stat cards show correct counts', async ({ page }) => {
     // Wait for the loading placeholders to resolve (they show '—' while loading)
     await expect(page.getByText('—')).toHaveCount(0, { timeout: 10000 })

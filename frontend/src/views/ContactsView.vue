@@ -28,7 +28,9 @@ const importSegmentId = ref('')
 
 onMounted(async () => {
   try {
-    ;[contacts.value, segments.value] = await Promise.all([listContacts(), listSegments()])
+    const [c, s] = await Promise.all([listContacts(), listSegments()])
+    contacts.value = c || []
+    segments.value = s || []
   } catch {
     toast.add('error', 'Failed to load contacts')
   } finally {

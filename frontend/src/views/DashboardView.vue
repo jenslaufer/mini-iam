@@ -23,16 +23,24 @@ const contacts = ref([])
 const segments = ref([])
 const campaigns = ref([])
 const loading = ref(true)
+const error = ref('')
 
 onMounted(async () => {
   try {
-    ;[users.value, clients.value, contacts.value, segments.value, campaigns.value] = await Promise.all([
+    const results = await Promise.all([
       getUsers(),
       getClients(),
       listContacts(),
       listSegments(),
       listCampaigns(),
     ])
+    users.value = results[0] || []
+    clients.value = results[1] || []
+    contacts.value = results[2] || []
+    segments.value = results[3] || []
+    campaigns.value = results[4] || []
+  } catch (e) {
+    error.value = e.response?.data?.error || e.message || 'Failed to load dashboard'
   } finally {
     loading.value = false
   }
@@ -48,6 +56,11 @@ const totalCampaigns = computed(() => campaigns.value.length)
 
 <template>
   <div class="space-y-6 max-w-4xl">
+    <!-- Error -->
+    <div v-if="error" class="px-4 py-3 rounded-lg bg-red-50 border border-red-200 text-red-700 text-sm">
+      {{ error }}
+    </div>
+
     <!-- IAM Stats -->
     <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
       <StatCard label="Total Users" :value="loading ? '—' : totalUsers" icon-class="bg-blue-100">

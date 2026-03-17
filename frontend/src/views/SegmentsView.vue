@@ -35,7 +35,7 @@ const editTarget = ref(null)
 
 onMounted(async () => {
   try {
-    segments.value = await listSegments()
+    segments.value = (await listSegments()) || []
   } catch {
     toast.add('error', 'Failed to load segments')
   } finally {

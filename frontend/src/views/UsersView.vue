@@ -17,7 +17,7 @@ const openDropdown = ref(null)
 
 onMounted(async () => {
   try {
-    users.value = await getUsers()
+    users.value = (await getUsers()) || []
   } catch {
     toast.add('error', 'Failed to load users')
   } finally {

@@ -15,6 +15,13 @@ test.describe('Tenants page', () => {
     await expect(page.locator('tbody').getByText('default').first()).toBeVisible()
   })
 
+  test('content persists after loading', async ({ page }) => {
+    await expect(page.locator('tbody').getByText('default').first()).toBeVisible()
+    await page.waitForTimeout(1000)
+    await expect(page.locator('tbody').getByText('default').first()).toBeVisible()
+    await expect(page.getByRole('button', { name: 'Import Tenant' })).toBeVisible()
+  })
+
   test('imported tenant appears in list', async ({ page }) => {
     const slug = `e2e-tenant-${Date.now()}`
     const token = await getAdminToken(BASE_URL)

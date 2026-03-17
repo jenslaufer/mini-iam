@@ -1,9 +1,9 @@
 services:
   launch-kit:
-    build: ./backend
     image: ghcr.io/solytics/launch-kit:latest
     volumes:
       - launch-kit-data:/data
+      - ./tenant-example.json:/data/tenant-example.json
     environment:
       PORT: "${PORT}"
       ISSUER_URL: "${ISSUER_URL}"
@@ -20,7 +20,6 @@ services:
     restart: unless-stopped
 
   frontend:
-    build: ./frontend
     image: ghcr.io/solytics/launch-kit-frontend:latest
     ports:
       - "${EXTERNAL_PORT}:3000"
