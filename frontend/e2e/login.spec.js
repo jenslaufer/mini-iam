@@ -56,13 +56,27 @@ test.describe('Login page', () => {
     await deleteUserApi(BASE_URL, token, id)
   })
 
-  test('successful admin login redirects to dashboard', async ({ page }) => {
+  test('successful admin login redirects to dashboard with loaded data', async ({ page }) => {
+    // Capture JS errors
+    const jsErrors = []
+    page.on('pageerror', (err) => jsErrors.push(err.message))
+
     await page.goto('/login')
+    await page.getByPlaceholder('Leave empty for platform admin').fill('')
     await page.getByPlaceholder('admin@example.com').fill('admin@launch-kit.local')
     await page.getByPlaceholder('••••••••').fill('changeme')
     await page.getByRole('button', { name: 'Sign in' }).click()
-    await expect(page).toHaveURL('/dashboard')
+    await expect(page).toHaveURL('/dashboard', { timeout: 15000 })
+
+    // Verify dashboard actually loaded data (not stuck in loading state)
     await expect(page.getByText('Total Users')).toBeVisible()
+    await page.waitForFunction(() => !document.querySelector('.animate-pulse'), { timeout: 10000 })
+
+    // Verify tenant store initialized (platform admin sees selector)
+    await expect(page.locator('aside select')).toBeVisible({ timeout: 5000 })
+
+    // No JS errors during login flow
+    expect(jsErrors).toEqual([])
   })
 
   test('logout returns to login page', async ({ page }) => {
