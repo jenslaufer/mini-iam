@@ -14,14 +14,15 @@ import (
 // --- Config types for import ---
 
 type ImportConfig struct {
-	Slug      string           `json:"slug"`
-	Name      string           `json:"name"`
-	SMTP      *SMTPConfig      `json:"smtp,omitempty"`
-	Admin     *AdminConfig     `json:"admin,omitempty"`
-	Clients   []ClientConfig   `json:"clients,omitempty"`
-	Segments  []SegmentConfig  `json:"segments,omitempty"`
-	Contacts  []ContactConfig  `json:"contacts,omitempty"`
-	Campaigns []CampaignConfig `json:"campaigns,omitempty"`
+	Slug                string           `json:"slug"`
+	Name                string           `json:"name"`
+	RegistrationEnabled bool             `json:"registration_enabled"`
+	SMTP                *SMTPConfig      `json:"smtp,omitempty"`
+	Admin               *AdminConfig     `json:"admin,omitempty"`
+	Clients             []ClientConfig   `json:"clients,omitempty"`
+	Segments            []SegmentConfig  `json:"segments,omitempty"`
+	Contacts            []ContactConfig  `json:"contacts,omitempty"`
+	Campaigns           []CampaignConfig `json:"campaigns,omitempty"`
 }
 
 type AdminConfig struct {
@@ -107,6 +108,9 @@ func ImportTenantConfig(tenantStore *Store, iamStore *iam.Store, mktStore *marke
 	tn, err := tenantStore.CreateWithSMTP(cfg.Slug, cfg.Name, smtp)
 	if err != nil {
 		return nil, err
+	}
+	if cfg.RegistrationEnabled {
+		tenantStore.UpdateRegistrationEnabled(tn.ID, true)
 	}
 
 	scopedIAM := iamStore.ForTenant(tn.ID)
@@ -270,8 +274,9 @@ func (h *ExportImportHandler) handleExport(w http.ResponseWriter, r *http.Reques
 	scopedMkt := h.mktStore.ForTenant(tn.ID)
 
 	export := map[string]interface{}{
-		"slug": tn.Slug,
-		"name": tn.Name,
+		"slug":                 tn.Slug,
+		"name":                 tn.Name,
+		"registration_enabled": tn.RegistrationEnabled,
 	}
 
 	// SMTP config (only if configured); password is never exported

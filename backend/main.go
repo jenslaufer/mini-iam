@@ -48,6 +48,15 @@ func main() {
 		defaultTenantID = t.ID
 	}
 
+	// Enable registration on default tenant if requested (e.g. for E2E tests)
+	if os.Getenv("DEFAULT_TENANT_REGISTRATION") != "" && defaultTenantID != "" {
+		if err := tenantStore.UpdateRegistrationEnabled(defaultTenantID, true); err != nil {
+			log.Printf("Warning: failed to enable registration on default tenant: %v", err)
+		} else {
+			log.Printf("Registration enabled on default tenant (DEFAULT_TENANT_REGISTRATION)")
+		}
+	}
+
 	// Seed admin into default tenant scope
 	scopedIAM := iamStore.ForTenant(defaultTenantID)
 	if adminEmail != "" && adminPassword != "" {
@@ -119,6 +128,7 @@ func main() {
 
 	iamHandler := iam.NewHandler(iamStore, registry, issuer)
 	iamHandler.PlatformTenantID = defaultTenantID
+	iamHandler.Registration = tenantStore
 	marketingHandler := marketing.NewHandler(marketingStore, iamStore, registry)
 	marketingHandler.PlatformTenantID = defaultTenantID
 	marketingHandler.SetSender(sender)
@@ -381,6 +391,7 @@ func migrate(db *sql.DB) error {
 	db.Exec("ALTER TABLE keys ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''")
 	db.Exec("ALTER TABLE segments ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''")
 	db.Exec("ALTER TABLE campaigns ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''")
+	db.Exec("ALTER TABLE tenants ADD COLUMN registration_enabled INTEGER NOT NULL DEFAULT 0")
 	db.Exec("ALTER TABLE tenants ADD COLUMN smtp_host TEXT NOT NULL DEFAULT ''")
 	db.Exec("ALTER TABLE tenants ADD COLUMN smtp_port TEXT NOT NULL DEFAULT ''")
 	db.Exec("ALTER TABLE tenants ADD COLUMN smtp_user TEXT NOT NULL DEFAULT ''")

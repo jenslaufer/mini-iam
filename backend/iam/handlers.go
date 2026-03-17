@@ -13,11 +13,17 @@ import (
 	"github.com/jenslaufer/launch-kit/tenantctx"
 )
 
+// RegistrationPolicy controls whether public registration is allowed per tenant.
+type RegistrationPolicy interface {
+	IsRegistrationEnabled(tenantID string) bool
+}
+
 type Handler struct {
 	Store            *Store
 	Registry         *TokenRegistry
 	Issuer           string
 	PlatformTenantID string
+	Registration     RegistrationPolicy // nil = registration always allowed
 }
 
 func NewHandler(store *Store, registry *TokenRegistry, issuer string) *Handler {
@@ -73,6 +79,15 @@ func (h *Handler) Register(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		WriteError(w, http.StatusMethodNotAllowed, "invalid_request", "method not allowed")
 		return
+	}
+
+	// Check if registration is enabled for this tenant
+	if h.Registration != nil {
+		tenantID := tenantctx.FromContext(r.Context())
+		if !h.Registration.IsRegistrationEnabled(tenantID) {
+			WriteError(w, http.StatusForbidden, "registration_disabled", "public registration is disabled for this tenant")
+			return
+		}
 	}
 
 	var req struct {

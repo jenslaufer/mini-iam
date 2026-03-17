@@ -22,11 +22,12 @@ type SMTPConfig struct {
 }
 
 type Tenant struct {
-	ID        string     `json:"id"`
-	Slug      string     `json:"slug"`
-	Name      string     `json:"name"`
-	SMTP      SMTPConfig `json:"smtp,omitempty"`
-	CreatedAt time.Time  `json:"created_at"`
+	ID                  string     `json:"id"`
+	Slug                string     `json:"slug"`
+	Name                string     `json:"name"`
+	RegistrationEnabled bool       `json:"registration_enabled"`
+	SMTP                SMTPConfig `json:"smtp,omitempty"`
+	CreatedAt           time.Time  `json:"created_at"`
 }
 
 
@@ -65,15 +66,30 @@ func (s *Store) CreateWithSMTP(slug, name string, smtp SMTPConfig) (*Tenant, err
 	return t, nil
 }
 
-const tenantCols = `id, slug, name, smtp_host, smtp_port, smtp_user, smtp_password, smtp_from, smtp_from_name, smtp_rate_ms, created_at`
+const tenantCols = `id, slug, name, registration_enabled, smtp_host, smtp_port, smtp_user, smtp_password, smtp_from, smtp_from_name, smtp_rate_ms, created_at`
 
 func scanTenant(row interface{ Scan(...interface{}) error }) (*Tenant, error) {
 	t := &Tenant{}
-	err := row.Scan(&t.ID, &t.Slug, &t.Name, &t.SMTP.Host, &t.SMTP.Port, &t.SMTP.User, &t.SMTP.Password, &t.SMTP.From, &t.SMTP.FromName, &t.SMTP.RateMS, &t.CreatedAt)
+	err := row.Scan(&t.ID, &t.Slug, &t.Name, &t.RegistrationEnabled, &t.SMTP.Host, &t.SMTP.Port, &t.SMTP.User, &t.SMTP.Password, &t.SMTP.From, &t.SMTP.FromName, &t.SMTP.RateMS, &t.CreatedAt)
 	if err != nil {
 		return nil, err
 	}
 	return t, nil
+}
+
+func (s *Store) UpdateRegistrationEnabled(id string, enabled bool) error {
+	_, err := s.db.Exec("UPDATE tenants SET registration_enabled = ? WHERE id = ?", enabled, id)
+	return err
+}
+
+// IsRegistrationEnabled implements iam.RegistrationPolicy.
+func (s *Store) IsRegistrationEnabled(tenantID string) bool {
+	var enabled bool
+	err := s.db.QueryRow("SELECT registration_enabled FROM tenants WHERE id = ?", tenantID).Scan(&enabled)
+	if err != nil {
+		return false // deny on error
+	}
+	return enabled
 }
 
 func (s *Store) GetBySlug(slug string) (*Tenant, error) {

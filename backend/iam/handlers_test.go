@@ -933,3 +933,33 @@ func TestTokenAuthCodeNoPKCENoSecret(t *testing.T) {
 		t.Errorf("no PKCE, no secret: status = %d, want 400", resp.StatusCode)
 	}
 }
+
+// --- Registration policy ---
+
+type denyRegistration struct{}
+
+func (denyRegistration) IsRegistrationEnabled(string) bool { return false }
+
+func TestRegisterDisabledByPolicy(t *testing.T) {
+	env := newHandlerEnv(t)
+	// Patch handler to deny registration
+	// We need to reach the handler — recreate with policy
+	db := env.store.DB()
+	store := NewStore(db)
+	key := env.tokens
+	registry := NewStaticTokenRegistry(key)
+	h := NewHandler(store, registry, "http://test-issuer")
+	h.Registration = denyRegistration{}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/register", h.Register)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	resp, _ := http.Post(srv.URL+"/register", "application/json",
+		strings.NewReader(`{"email":"blocked@example.com","password":"longpassword","name":"Blocked"}`))
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("registration disabled: status = %d, want 403", resp.StatusCode)
+	}
+}

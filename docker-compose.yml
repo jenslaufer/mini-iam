@@ -11,6 +11,7 @@ services:
       ADMIN_EMAIL: "${ADMIN_EMAIL}"
       ADMIN_PASSWORD: "${ADMIN_PASSWORD}"
       DEFAULT_TENANT: "${DEFAULT_TENANT}"
+      DEFAULT_TENANT_REGISTRATION: "${DEFAULT_TENANT_REGISTRATION:-}"
     healthcheck:
       test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:8080/health || exit 1"]
       interval: 30s

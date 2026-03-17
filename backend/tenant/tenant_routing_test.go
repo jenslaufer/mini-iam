@@ -27,6 +27,7 @@ func newRoutingDB(t *testing.T) *sql.DB {
 	schema := `
 	CREATE TABLE IF NOT EXISTS tenants (
 		id TEXT PRIMARY KEY, slug TEXT UNIQUE NOT NULL, name TEXT NOT NULL,
+		registration_enabled INTEGER NOT NULL DEFAULT 0,
 		smtp_host TEXT NOT NULL DEFAULT '', smtp_port TEXT NOT NULL DEFAULT '',
 		smtp_user TEXT NOT NULL DEFAULT '', smtp_password TEXT NOT NULL DEFAULT '',
 		smtp_from TEXT NOT NULL DEFAULT '', smtp_from_name TEXT NOT NULL DEFAULT '',
