@@ -28,5 +28,37 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  demo-backend:
+    build: ./demo-backend
+    environment:
+      OIDC_ISSUER_URL: "${OIDC_ISSUER_URL}"
+      OIDC_JWKS_URI: "${OIDC_JWKS_URI}"
+      OIDC_AUDIENCE: "${OIDC_AUDIENCE}"
+    healthcheck:
+      test: ["CMD-SHELL", "python -c 'import urllib.request; urllib.request.urlopen(\"http://localhost:8000/api/health\")'"]
+      interval: 10s
+      timeout: 5s
+      start_period: 5s
+      retries: 3
+    depends_on:
+      launch-kit:
+        condition: service_healthy
+    restart: unless-stopped
+
+  demo-frontend:
+    build:
+      context: ./demo-frontend
+      args:
+        VITE_OIDC_ISSUER_URL: "${VITE_OIDC_ISSUER_URL}"
+        VITE_API_URL: "${VITE_API_URL}"
+    ports:
+      - "${DEMO_PORT}:3000"
+    depends_on:
+      launch-kit:
+        condition: service_healthy
+      demo-backend:
+        condition: service_healthy
+    restart: unless-stopped
+
 volumes:
   launch-kit-data:
