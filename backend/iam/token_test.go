@@ -166,3 +166,19 @@ func TestVerifyPKCEUnsupportedMethod(t *testing.T) {
 		t.Error("unsupported method should return false")
 	}
 }
+
+// --- M-1: Issuer validation ---
+
+func TestValidateAccessTokenWrongIssuer(t *testing.T) {
+	key, _ := rsa.GenerateKey(rand.Reader, 2048)
+	tsA := NewTokenService(key, "http://issuer-a")
+	tsB := NewTokenService(key, "http://issuer-b") // same key, different issuer
+
+	user := &User{ID: "u1", Email: "test@example.com", Name: "Test", Role: "user"}
+	token, _ := tsA.CreateAccessToken(user, "aud", "")
+
+	_, err := tsB.ValidateAccessToken(token)
+	if err == nil {
+		t.Error("expected error: token issuer doesn't match validator issuer")
+	}
+}

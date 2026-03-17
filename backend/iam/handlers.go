@@ -53,6 +53,13 @@ func WriteError(w http.ResponseWriter, status int, err, desc string) {
 	WriteJSON(w, status, ErrorResponse{Error: err, ErrorDescription: desc})
 }
 
+// WriteTokenJSON writes a token response with cache headers per RFC 6749 §5.1.
+func WriteTokenJSON(w http.ResponseWriter, status int, v interface{}) {
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Pragma", "no-cache")
+	WriteJSON(w, status, v)
+}
+
 var EmailRegex = regexp.MustCompile(`^[^\s@]+@[^\s@]+\.[^\s@]+$`)
 
 // --- Handlers ---
@@ -77,12 +84,12 @@ func (h *Handler) Register(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !EmailRegex.MatchString(req.Email) {
+	if len(req.Email) > 254 || !EmailRegex.MatchString(req.Email) {
 		WriteError(w, http.StatusBadRequest, "invalid_request", "invalid email format")
 		return
 	}
-	if req.Password == "" {
-		WriteError(w, http.StatusBadRequest, "invalid_request", "password required")
+	if len(req.Password) < 8 {
+		WriteError(w, http.StatusBadRequest, "invalid_request", "password must be at least 8 characters")
 		return
 	}
 	if req.Name == "" {
@@ -151,7 +158,7 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	WriteJSON(w, http.StatusOK, TokenResponse{
+	WriteTokenJSON(w, http.StatusOK, TokenResponse{
 		AccessToken:  accessToken,
 		TokenType:    "Bearer",
 		ExpiresIn:    3600,
@@ -342,6 +349,9 @@ func (h *Handler) tokenAuthorizationCode(w http.ResponseWriter, r *http.Request)
 			WriteError(w, http.StatusUnauthorized, "invalid_client", "invalid client credentials")
 			return
 		}
+	} else {
+		WriteError(w, http.StatusBadRequest, "invalid_grant", "code_challenge or client_secret required")
+		return
 	}
 
 	user, err := store.GetUserByID(ac.UserID)
@@ -375,7 +385,7 @@ func (h *Handler) tokenAuthorizationCode(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	WriteJSON(w, http.StatusOK, TokenResponse{
+	WriteTokenJSON(w, http.StatusOK, TokenResponse{
 		AccessToken:  accessToken,
 		TokenType:    "Bearer",
 		ExpiresIn:    3600,
@@ -437,7 +447,7 @@ func (h *Handler) tokenRefreshToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	WriteJSON(w, http.StatusOK, TokenResponse{
+	WriteTokenJSON(w, http.StatusOK, TokenResponse{
 		AccessToken:  accessToken,
 		TokenType:    "Bearer",
 		ExpiresIn:    3600,
