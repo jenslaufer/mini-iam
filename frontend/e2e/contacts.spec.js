@@ -13,18 +13,14 @@ test.describe('Contacts page', () => {
   })
 
   test('shows contacts list or empty state', async ({ page }) => {
-    const emptyState = page.getByRole('cell', { name: 'No contacts found' })
-    const firstRow = page.locator('tbody tr').first()
-    await expect(emptyState.or(firstRow)).toBeVisible()
+    await expect(page.locator('tbody tr').first()).toBeVisible()
   })
 
   test('content persists after loading', async ({ page }) => {
     await expect(page.getByRole('button', { name: '+ Add Contact' })).toBeVisible()
     await page.waitForTimeout(1000)
     await expect(page.getByRole('button', { name: '+ Add Contact' })).toBeVisible()
-    const emptyState = page.getByRole('cell', { name: 'No contacts found' })
-    const firstRow = page.locator('tbody tr').first()
-    await expect(emptyState.or(firstRow)).toBeVisible()
+    await expect(page.locator('tbody tr').first()).toBeVisible()
   })
 
   test('can create contact via modal', async ({ page }) => {

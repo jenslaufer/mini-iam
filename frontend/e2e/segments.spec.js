@@ -12,18 +12,14 @@ test.describe('Segments page', () => {
   })
 
   test('shows segments list or empty state', async ({ page }) => {
-    const emptyState = page.getByRole('cell', { name: 'No segments yet' })
-    const firstRow = page.locator('tbody tr').first()
-    await expect(emptyState.or(firstRow)).toBeVisible()
+    await expect(page.locator('tbody tr').first()).toBeVisible()
   })
 
   test('content persists after loading', async ({ page }) => {
     await expect(page.getByRole('button', { name: '+ New Segment' })).toBeVisible()
     await page.waitForTimeout(1000)
     await expect(page.getByRole('button', { name: '+ New Segment' })).toBeVisible()
-    const emptyState = page.getByRole('cell', { name: 'No segments yet' })
-    const firstRow = page.locator('tbody tr').first()
-    await expect(emptyState.or(firstRow)).toBeVisible()
+    await expect(page.locator('tbody tr').first()).toBeVisible()
   })
 
   test('can create segment via modal', async ({ page }) => {
