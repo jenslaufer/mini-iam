@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import { MagnifyingGlassIcon } from '@heroicons/vue/24/outline'
 import BaseButton from '../components/BaseButton.vue'
 import BaseInput from '../components/BaseInput.vue'
@@ -8,9 +8,11 @@ import { listContacts, createContact, deleteContact, importContacts } from '../a
 import { listSegments } from '../api/segments.js'
 import { useToastStore } from '../stores/toast.js'
 import { useConfirm } from '../composables/useConfirm.js'
+import { useTenantStore } from '../stores/tenant.js'
 
 const toast = useToastStore()
 const { confirm } = useConfirm()
+const tenantStore = useTenantStore()
 
 const contacts = ref([])
 const segments = ref([])
@@ -26,7 +28,8 @@ const importing = ref(false)
 const importText = ref('')
 const importSegmentId = ref('')
 
-onMounted(async () => {
+async function loadData() {
+  loading.value = true
   try {
     const [c, s] = await Promise.all([listContacts(), listSegments()])
     contacts.value = c || []
@@ -36,7 +39,10 @@ onMounted(async () => {
   } finally {
     loading.value = false
   }
-})
+}
+
+onMounted(loadData)
+watch(() => tenantStore.currentSlug, () => { if (!loading.value) loadData() })
 
 const filtered = computed(() => {
   const q = search.value.toLowerCase()

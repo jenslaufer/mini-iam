@@ -5,9 +5,11 @@ import BaseModal from '../components/BaseModal.vue'
 import { getTenants, deleteTenant, exportTenant, importTenant } from '../api/tenants.js'
 import { useToastStore } from '../stores/toast.js'
 import { useConfirm } from '../composables/useConfirm.js'
+import { useTenantStore } from '../stores/tenant.js'
 
 const toast = useToastStore()
 const { confirm } = useConfirm()
+const tenantStore = useTenantStore()
 
 const tenants = ref([])
 const loading = ref(true)
@@ -53,6 +55,7 @@ async function submitImport() {
     const data = JSON.parse(text)
     const result = await importTenant(data)
     tenants.value = await getTenants()
+    await tenantStore.loadTenants()
     showImportModal.value = false
     toast.add('success', `Tenant "${result.slug}" imported`)
     if (result.clients?.some((c) => c.client_secret)) {
@@ -89,6 +92,7 @@ async function remove(tenant) {
   try {
     await deleteTenant(tenant.id)
     tenants.value = tenants.value.filter((t) => t.id !== tenant.id)
+    await tenantStore.loadTenants()
     toast.add('success', 'Tenant deleted')
   } catch {
     toast.add('error', 'Failed to delete tenant')

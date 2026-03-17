@@ -2,6 +2,8 @@ import { createRouter, createWebHistory } from 'vue-router'
 import { useAuthStore } from '../stores/auth.js'
 import AppLayout from '../components/AppLayout.vue'
 
+let restored = false
+
 const router = createRouter({
   history: createWebHistory(),
   routes: [
@@ -26,13 +28,17 @@ const router = createRouter({
   ],
 })
 
-router.beforeEach((to) => {
+router.beforeEach(async (to) => {
   const auth = useAuthStore()
   if (to.path !== '/login' && !auth.token) {
     return '/login'
   }
   if (to.path === '/login' && auth.token) {
     return '/dashboard'
+  }
+  if (auth.token && !restored) {
+    restored = true
+    await auth.restore()
   }
 })
 

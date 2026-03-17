@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import BaseButton from '../components/BaseButton.vue'
 import BaseInput from '../components/BaseInput.vue'
 import BaseModal from '../components/BaseModal.vue'
@@ -14,9 +14,11 @@ import { listCampaigns, createCampaign, updateCampaign, deleteCampaign, sendCamp
 import { listSegments } from '../api/segments.js'
 import { useToastStore } from '../stores/toast.js'
 import { useConfirm } from '../composables/useConfirm.js'
+import { useTenantStore } from '../stores/tenant.js'
 
 const toast = useToastStore()
 const { confirm } = useConfirm()
+const tenantStore = useTenantStore()
 
 const campaigns = ref([])
 const segments = ref([])
@@ -34,7 +36,8 @@ const statsLoading = ref(false)
 
 const previewMode = ref(false)
 
-onMounted(async () => {
+async function loadData() {
+  loading.value = true
   try {
     const [c, s] = await Promise.all([listCampaigns(), listSegments()])
     campaigns.value = c || []
@@ -44,7 +47,10 @@ onMounted(async () => {
   } finally {
     loading.value = false
   }
-})
+}
+
+onMounted(loadData)
+watch(() => tenantStore.currentSlug, () => { if (!loading.value) loadData() })
 
 function formatDate(iso) {
   if (!iso) return '—'

@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import { RouterLink } from 'vue-router'
 import {
   UsersIcon,
@@ -16,6 +16,9 @@ import { getClients } from '../api/clients.js'
 import { listContacts } from '../api/contacts.js'
 import { listSegments } from '../api/segments.js'
 import { listCampaigns } from '../api/campaigns.js'
+import { useTenantStore } from '../stores/tenant.js'
+
+const tenantStore = useTenantStore()
 
 const users = ref([])
 const clients = ref([])
@@ -25,7 +28,9 @@ const campaigns = ref([])
 const loading = ref(true)
 const error = ref('')
 
-onMounted(async () => {
+async function loadData() {
+  loading.value = true
+  error.value = ''
   try {
     const results = await Promise.all([
       getUsers(),
@@ -44,7 +49,10 @@ onMounted(async () => {
   } finally {
     loading.value = false
   }
-})
+}
+
+onMounted(loadData)
+watch(() => tenantStore.currentSlug, () => { if (!loading.value) loadData() })
 
 const totalUsers = computed(() => users.value.length)
 const totalAdmins = computed(() => users.value.filter((u) => u.role === 'admin').length)

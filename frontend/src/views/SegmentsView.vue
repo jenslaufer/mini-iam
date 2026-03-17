@@ -1,5 +1,5 @@
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, watch } from 'vue'
 import { ChevronDownIcon, ChevronRightIcon } from '@heroicons/vue/24/outline'
 import BaseButton from '../components/BaseButton.vue'
 import BaseInput from '../components/BaseInput.vue'
@@ -14,9 +14,11 @@ import {
 } from '../api/segments.js'
 import { useToastStore } from '../stores/toast.js'
 import { useConfirm } from '../composables/useConfirm.js'
+import { useTenantStore } from '../stores/tenant.js'
 
 const toast = useToastStore()
 const { confirm } = useConfirm()
+const tenantStore = useTenantStore()
 
 const segments = ref([])
 const loading = ref(true)
@@ -33,7 +35,10 @@ const editing = ref(false)
 const editForm = ref({ name: '', description: '' })
 const editTarget = ref(null)
 
-onMounted(async () => {
+async function loadData() {
+  loading.value = true
+  expandedId.value = null
+  expandedContacts.value = []
   try {
     segments.value = (await listSegments()) || []
   } catch {
@@ -41,7 +46,10 @@ onMounted(async () => {
   } finally {
     loading.value = false
   }
-})
+}
+
+onMounted(loadData)
+watch(() => tenantStore.currentSlug, () => { if (!loading.value) loadData() })
 
 function formatDate(iso) {
   return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
