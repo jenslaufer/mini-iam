@@ -1,15 +1,17 @@
 services:
   launch-kit:
     build: ./backend
+    image: ghcr.io/solytics/launch-kit:latest
     volumes:
       - launch-kit-data:/data
     environment:
-      PORT: "8080"
-      ISSUER_URL: "http://localhost:3000/auth"
-      CORS_ORIGINS: "*"
-      ADMIN_EMAIL: "admin@launch-kit.local"
-      ADMIN_PASSWORD: "changeme"
-      DEFAULT_TENANT: "default"
+      PORT: "${PORT}"
+      ISSUER_URL: "${ISSUER_URL}"
+      CORS_ORIGINS: "${CORS_ORIGINS}"
+      ADMIN_EMAIL: "${ADMIN_EMAIL}"
+      ADMIN_PASSWORD: "${ADMIN_PASSWORD}"
+      DEFAULT_TENANT: "${DEFAULT_TENANT}"
+      DEFAULT_TENANT_REGISTRATION: "${DEFAULT_TENANT_REGISTRATION:-}"
     healthcheck:
       test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:8080/health || exit 1"]
       interval: 30s
@@ -20,8 +22,9 @@ services:
 
   frontend:
     build: ./frontend
+    image: ghcr.io/solytics/launch-kit-frontend:latest
     ports:
-      - "3000:3000"
+      - "${EXTERNAL_PORT}:3000"
     depends_on:
       launch-kit:
         condition: service_healthy

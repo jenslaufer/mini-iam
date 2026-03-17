@@ -299,29 +299,42 @@ func (s *Store) CreateAuthCode(clientID, userID, redirectURI, scope, nonce, code
 }
 
 func (s *Store) ConsumeAuthCode(code string) (*AuthCode, error) {
-	ac := &AuthCode{}
-	var used int
-	err := s.db.QueryRow(
-		`SELECT code, client_id, user_id, redirect_uri, scope, nonce, code_challenge, code_challenge_method, expires_at, used
-		 FROM auth_codes WHERE code = ? AND tenant_id = ?`, code, s.tenantID,
-	).Scan(&ac.Code, &ac.ClientID, &ac.UserID, &ac.RedirectURI, &ac.Scope, &ac.Nonce,
-		&ac.CodeChallenge, &ac.CodeChallengeMethod, &ac.ExpiresAt, &used)
+	// Atomically mark the code as used; prevents TOCTOU race between SELECT and UPDATE.
+	result, err := s.db.Exec(
+		`UPDATE auth_codes SET used = 1 WHERE code = ? AND tenant_id = ? AND used = 0 AND expires_at > ?`,
+		code, s.tenantID, time.Now().UTC(),
+	)
 	if err != nil {
 		return nil, fmt.Errorf("invalid authorization code")
 	}
-	ac.Used = used != 0
-
-	if ac.Used {
-		return nil, fmt.Errorf("authorization code already used")
-	}
-	if time.Now().UTC().After(ac.ExpiresAt) {
+	rows, _ := result.RowsAffected()
+	if rows == 0 {
+		// Check why: code not found, already used, or expired
+		var used int
+		var expiresAt time.Time
+		err := s.db.QueryRow(
+			`SELECT used, expires_at FROM auth_codes WHERE code = ? AND tenant_id = ?`, code, s.tenantID,
+		).Scan(&used, &expiresAt)
+		if err != nil {
+			return nil, fmt.Errorf("invalid authorization code")
+		}
+		if used != 0 {
+			return nil, fmt.Errorf("authorization code already used")
+		}
 		return nil, fmt.Errorf("authorization code expired")
 	}
 
-	_, err = s.db.Exec("UPDATE auth_codes SET used = 1 WHERE code = ? AND tenant_id = ?", code, s.tenantID)
+	// Now read the full auth code data
+	ac := &AuthCode{}
+	err = s.db.QueryRow(
+		`SELECT code, client_id, user_id, redirect_uri, scope, nonce, code_challenge, code_challenge_method, expires_at
+		 FROM auth_codes WHERE code = ? AND tenant_id = ?`, code, s.tenantID,
+	).Scan(&ac.Code, &ac.ClientID, &ac.UserID, &ac.RedirectURI, &ac.Scope, &ac.Nonce,
+		&ac.CodeChallenge, &ac.CodeChallengeMethod, &ac.ExpiresAt)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("invalid authorization code")
 	}
+	ac.Used = true
 	return ac, nil
 }
 

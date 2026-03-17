@@ -1,7 +1,6 @@
 package tenant
 
 import (
-	"context"
 	"database/sql"
 	"fmt"
 	"net/http"
@@ -23,28 +22,14 @@ type SMTPConfig struct {
 }
 
 type Tenant struct {
-	ID        string     `json:"id"`
-	Slug      string     `json:"slug"`
-	Name      string     `json:"name"`
-	SMTP      SMTPConfig `json:"smtp,omitempty"`
-	CreatedAt time.Time  `json:"created_at"`
+	ID                  string     `json:"id"`
+	Slug                string     `json:"slug"`
+	Name                string     `json:"name"`
+	RegistrationEnabled bool       `json:"registration_enabled"`
+	SMTP                SMTPConfig `json:"smtp,omitempty"`
+	CreatedAt           time.Time  `json:"created_at"`
 }
 
-func WithID(ctx context.Context, id string) context.Context {
-	return tenantctx.WithID(ctx, id)
-}
-
-func FromContext(ctx context.Context) string {
-	return tenantctx.FromContext(ctx)
-}
-
-func WithSlug(ctx context.Context, slug string) context.Context {
-	return tenantctx.WithSlug(ctx, slug)
-}
-
-func SlugFromContext(ctx context.Context) string {
-	return tenantctx.SlugFromContext(ctx)
-}
 
 // Store manages tenant CRUD operations.
 type Store struct {
@@ -60,6 +45,9 @@ func (s *Store) Create(slug, name string) (*Tenant, error) {
 }
 
 func (s *Store) CreateWithSMTP(slug, name string, smtp SMTPConfig) (*Tenant, error) {
+	if err := ValidateSlug(slug); err != nil {
+		return nil, err
+	}
 	t := &Tenant{
 		ID:        uuid.NewString(),
 		Slug:      slug,
@@ -78,15 +66,30 @@ func (s *Store) CreateWithSMTP(slug, name string, smtp SMTPConfig) (*Tenant, err
 	return t, nil
 }
 
-const tenantCols = `id, slug, name, smtp_host, smtp_port, smtp_user, smtp_password, smtp_from, smtp_from_name, smtp_rate_ms, created_at`
+const tenantCols = `id, slug, name, registration_enabled, smtp_host, smtp_port, smtp_user, smtp_password, smtp_from, smtp_from_name, smtp_rate_ms, created_at`
 
 func scanTenant(row interface{ Scan(...interface{}) error }) (*Tenant, error) {
 	t := &Tenant{}
-	err := row.Scan(&t.ID, &t.Slug, &t.Name, &t.SMTP.Host, &t.SMTP.Port, &t.SMTP.User, &t.SMTP.Password, &t.SMTP.From, &t.SMTP.FromName, &t.SMTP.RateMS, &t.CreatedAt)
+	err := row.Scan(&t.ID, &t.Slug, &t.Name, &t.RegistrationEnabled, &t.SMTP.Host, &t.SMTP.Port, &t.SMTP.User, &t.SMTP.Password, &t.SMTP.From, &t.SMTP.FromName, &t.SMTP.RateMS, &t.CreatedAt)
 	if err != nil {
 		return nil, err
 	}
 	return t, nil
+}
+
+func (s *Store) UpdateRegistrationEnabled(id string, enabled bool) error {
+	_, err := s.db.Exec("UPDATE tenants SET registration_enabled = ? WHERE id = ?", enabled, id)
+	return err
+}
+
+// IsRegistrationEnabled implements iam.RegistrationPolicy.
+func (s *Store) IsRegistrationEnabled(tenantID string) bool {
+	var enabled bool
+	err := s.db.QueryRow("SELECT registration_enabled FROM tenants WHERE id = ?", tenantID).Scan(&enabled)
+	if err != nil {
+		return false // deny on error
+	}
+	return enabled
 }
 
 func (s *Store) GetBySlug(slug string) (*Tenant, error) {
@@ -130,7 +133,25 @@ func (s *Store) UpdateSMTP(id string, smtp SMTPConfig) error {
 }
 
 func (s *Store) Delete(id string) error {
-	result, err := s.db.Exec("DELETE FROM tenants WHERE id = ?", id)
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	// Delete all tenant-scoped tables. Junction tables (campaign_segments,
+	// contact_segments, campaign_recipients) have no tenant_id and are
+	// removed automatically via ON DELETE CASCADE when their parent rows go.
+	for _, table := range []string{
+		"campaigns", "contacts", "segments",
+		"auth_codes", "refresh_tokens", "keys", "clients", "users",
+	} {
+		if _, err := tx.Exec("DELETE FROM "+table+" WHERE tenant_id = ?", id); err != nil {
+			return err
+		}
+	}
+
+	result, err := tx.Exec("DELETE FROM tenants WHERE id = ?", id)
 	if err != nil {
 		return err
 	}
@@ -138,10 +159,19 @@ func (s *Store) Delete(id string) error {
 	if rows == 0 {
 		return fmt.Errorf("tenant not found")
 	}
-	return nil
+	return tx.Commit()
 }
 
-// GetSMTPConfig returns SMTP settings for a tenant. Implements marketing.TenantSMTPProvider.
+// GetTenantSlug returns the slug for a tenant. Implements marketing.TenantProvider.
+func (s *Store) GetTenantSlug(tenantID string) (string, error) {
+	t, err := s.GetByID(tenantID)
+	if err != nil {
+		return "", err
+	}
+	return t.Slug, nil
+}
+
+// GetSMTPConfig returns SMTP settings for a tenant. Implements marketing.TenantProvider.
 func (s *Store) GetSMTPConfig(tenantID string) (host, port, user, password, from, fromName string, rateMS int, err error) {
 	t, err := s.GetByID(tenantID)
 	if err != nil {
@@ -170,7 +200,7 @@ func Middleware(store *Store, defaultTenantID string) func(http.Handler) http.Ha
 					r2 := r.Clone(r.Context())
 					r2.URL.Path = rest[idx:]
 					r2.URL.RawPath = ""
-					ctx := WithSlug(WithID(r2.Context(), t.ID), slug)
+					ctx := tenantctx.WithSlug(tenantctx.WithID(r2.Context(), t.ID), slug)
 					next.ServeHTTP(w, r2.WithContext(ctx))
 					return
 				}
@@ -190,7 +220,7 @@ func Middleware(store *Store, defaultTenantID string) func(http.Handler) http.Ha
 				tenantID = defaultTenantID
 			}
 
-			ctx := WithSlug(WithID(r.Context(), tenantID), slug)
+			ctx := tenantctx.WithSlug(tenantctx.WithID(r.Context(), tenantID), slug)
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}

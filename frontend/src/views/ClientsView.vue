@@ -1,5 +1,5 @@
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, watch } from 'vue'
 import { ClipboardDocumentIcon, XMarkIcon } from '@heroicons/vue/24/outline'
 import BaseButton from '../components/BaseButton.vue'
 import BaseInput from '../components/BaseInput.vue'
@@ -7,9 +7,11 @@ import BaseModal from '../components/BaseModal.vue'
 import { getClients, createClient, deleteClient } from '../api/clients.js'
 import { useToastStore } from '../stores/toast.js'
 import { useConfirm } from '../composables/useConfirm.js'
+import { useTenantStore } from '../stores/tenant.js'
 
 const toast = useToastStore()
 const { confirm } = useConfirm()
+const tenantStore = useTenantStore()
 
 const clients = ref([])
 const loading = ref(true)
@@ -19,15 +21,19 @@ const newSecret = ref(null)
 
 const form = ref({ name: '', redirectUris: '' })
 
-onMounted(async () => {
+async function loadData() {
+  loading.value = true
   try {
-    clients.value = await getClients()
+    clients.value = (await getClients()) || []
   } catch {
     toast.add('error', 'Failed to load clients')
   } finally {
     loading.value = false
   }
-})
+}
+
+onMounted(loadData)
+watch(() => tenantStore.currentSlug, () => { if (!loading.value) loadData() })
 
 function formatDate(iso) {
   return new Date(iso).toLocaleDateString('en-US', {

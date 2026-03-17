@@ -1,0 +1,9 @@
+{
+  "slug": "demo",
+  "name": "Demo App",
+  "registration_enabled": true,
+  "admin": {
+    "email": "admin@demo.app",
+    "password": "admin1234"
+  }
+}

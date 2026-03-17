@@ -64,7 +64,7 @@ func (ts *TokenService) CreateIDToken(user *User, audience, nonce string, tenant
 func (ts *TokenService) ValidateAccessToken(tokenString string) (jwt.MapClaims, error) {
 	token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
 		return &ts.privateKey.PublicKey, nil
-	}, jwt.WithValidMethods([]string{"RS256"}))
+	}, jwt.WithValidMethods([]string{"RS256"}), jwt.WithIssuer(ts.issuer))
 	if err != nil {
 		return nil, err
 	}

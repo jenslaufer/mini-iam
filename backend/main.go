@@ -48,6 +48,15 @@ func main() {
 		defaultTenantID = t.ID
 	}
 
+	// Enable registration on default tenant if requested (e.g. for E2E tests)
+	if os.Getenv("DEFAULT_TENANT_REGISTRATION") != "" && defaultTenantID != "" {
+		if err := tenantStore.UpdateRegistrationEnabled(defaultTenantID, true); err != nil {
+			log.Printf("Warning: failed to enable registration on default tenant: %v", err)
+		} else {
+			log.Printf("Registration enabled on default tenant (DEFAULT_TENANT_REGISTRATION)")
+		}
+	}
+
 	// Seed admin into default tenant scope
 	scopedIAM := iamStore.ForTenant(defaultTenantID)
 	if adminEmail != "" && adminPassword != "" {
@@ -114,11 +123,14 @@ func main() {
 
 	// Start campaign sender worker (with per-tenant SMTP support)
 	sender := marketing.NewCampaignSender(marketingStore, mailer, issuer, smtpRateMS)
-	sender.SetSMTPProvider(tenantStore)
+	sender.SetTenantProvider(tenantStore)
 	sender.Start()
 
 	iamHandler := iam.NewHandler(iamStore, registry, issuer)
+	iamHandler.PlatformTenantID = defaultTenantID
+	iamHandler.Registration = tenantStore
 	marketingHandler := marketing.NewHandler(marketingStore, iamStore, registry)
+	marketingHandler.PlatformTenantID = defaultTenantID
 	marketingHandler.SetSender(sender)
 
 	mux := http.NewServeMux()
@@ -151,10 +163,10 @@ func main() {
 	mux.HandleFunc("/track/", marketingHandler.TrackOpen)
 	mux.HandleFunc("/unsubscribe/", marketingHandler.Unsubscribe)
 
-	// Tenant management API (admin-protected)
-	exportImportHandler := tenant.NewExportImportHandler(tenantStore, iamStore, marketingStore, registry)
+	// Tenant management API (platform-admin-protected)
+	exportImportHandler := tenant.NewExportImportHandler(tenantStore, iamStore, marketingStore, registry, defaultTenantID)
 	mux.HandleFunc("/admin/tenants", func(w http.ResponseWriter, r *http.Request) {
-		if _, ok := iam.CheckAdmin(registry, iamStore, w, r); !ok {
+		if _, ok := iam.CheckAdminCrossTenant(registry, iamStore, defaultTenantID, w, r); !ok {
 			return
 		}
 		switch r.Method {
@@ -163,6 +175,10 @@ func main() {
 			if err != nil {
 				iam.WriteError(w, http.StatusInternalServerError, "server_error", "failed to list tenants")
 				return
+			}
+			// Sanitize: never expose SMTP passwords in API responses
+			for i := range tenants {
+				tenants[i].SMTP.Password = ""
 			}
 			iam.WriteJSON(w, http.StatusOK, tenants)
 		case http.MethodPost:
@@ -176,6 +192,10 @@ func main() {
 			}
 			if req.Slug == "" {
 				iam.WriteError(w, http.StatusBadRequest, "invalid_request", "slug required")
+				return
+			}
+			if err := tenant.ValidateSlug(req.Slug); err != nil {
+				iam.WriteError(w, http.StatusBadRequest, "invalid_request", err.Error())
 				return
 			}
 			if req.Name == "" {
@@ -371,6 +391,7 @@ func migrate(db *sql.DB) error {
 	db.Exec("ALTER TABLE keys ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''")
 	db.Exec("ALTER TABLE segments ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''")
 	db.Exec("ALTER TABLE campaigns ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''")
+	db.Exec("ALTER TABLE tenants ADD COLUMN registration_enabled INTEGER NOT NULL DEFAULT 0")
 	db.Exec("ALTER TABLE tenants ADD COLUMN smtp_host TEXT NOT NULL DEFAULT ''")
 	db.Exec("ALTER TABLE tenants ADD COLUMN smtp_port TEXT NOT NULL DEFAULT ''")
 	db.Exec("ALTER TABLE tenants ADD COLUMN smtp_user TEXT NOT NULL DEFAULT ''")

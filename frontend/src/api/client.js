@@ -1,38 +1,37 @@
 import axios from 'axios'
-import { useAuthStore } from '../stores/auth.js'
 import router from '../router/index.js'
-
-function getTenantSlug() {
-  const parts = window.location.hostname.split('.')
-  if (parts.length >= 3) {
-    return parts[0]
-  }
-  return ''
-}
 
 const apiClient = axios.create({
   baseURL: import.meta.env.VITE_API_URL || '/auth',
 })
 
-apiClient.interceptors.request.use((config) => {
+apiClient.interceptors.request.use(async (config) => {
+  const { useAuthStore } = await import('../stores/auth.js')
+  const { useTenantStore } = await import('../stores/tenant.js')
   const auth = useAuthStore()
   if (auth.token) {
     config.headers.Authorization = `Bearer ${auth.token}`
   }
-  const tenant = getTenantSlug()
-  if (tenant) {
-    config.headers['X-Tenant'] = tenant
+  const tenantStore = useTenantStore()
+  if (tenantStore.currentSlug) {
+    config.headers['X-Tenant'] = tenantStore.currentSlug
   }
   return config
 })
 
+let logoutInProgress = false
+
 apiClient.interceptors.response.use(
   (res) => res,
-  (err) => {
-    if (err.response?.status === 401) {
+  async (err) => {
+    if (err.response?.status === 401 && !logoutInProgress) {
+      logoutInProgress = true
+      const { useAuthStore } = await import('../stores/auth.js')
       const auth = useAuthStore()
       auth.logout()
-      router.push('/login')
+      router.push('/login').finally(() => {
+        logoutInProgress = false
+      })
     }
     return Promise.reject(err)
   },

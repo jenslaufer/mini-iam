@@ -27,6 +27,7 @@ func newRoutingDB(t *testing.T) *sql.DB {
 	schema := `
 	CREATE TABLE IF NOT EXISTS tenants (
 		id TEXT PRIMARY KEY, slug TEXT UNIQUE NOT NULL, name TEXT NOT NULL,
+		registration_enabled INTEGER NOT NULL DEFAULT 0,
 		smtp_host TEXT NOT NULL DEFAULT '', smtp_port TEXT NOT NULL DEFAULT '',
 		smtp_user TEXT NOT NULL DEFAULT '', smtp_password TEXT NOT NULL DEFAULT '',
 		smtp_from TEXT NOT NULL DEFAULT '', smtp_from_name TEXT NOT NULL DEFAULT '',
@@ -432,5 +433,77 @@ func TestPathPrefix_PerTenantJWKSDifferentKeys(t *testing.T) {
 
 	if nA == nB {
 		t.Fatal("tenant-a and tenant-b have the same JWKS public key; expected distinct per-tenant keys")
+	}
+}
+
+func TestPlatformAdminCanAccessOtherTenantUsers(t *testing.T) {
+	env := newRoutingEnv(t)
+
+	// Create default (platform) tenant and a second tenant
+	platform := createTestTenant(t, env.tenantStore, "platform")
+	other := createTestTenant(t, env.tenantStore, "other-app")
+
+	// Re-create env with platform as default tenant so CheckAdmin can recognize it
+	db := newRoutingDB(t)
+	tenantStore := tenant.NewStore(db)
+	iamStore := iam.NewStore(db)
+	mktStore := marketing.NewStore(db)
+
+	platformTn, _ := tenantStore.Create("platform", "platform")
+	otherTn, _ := tenantStore.Create("other-app", "Other App")
+	_ = platform
+	_ = other
+
+	// Seed platform admin
+	platformIAM := iamStore.ForTenant(platformTn.ID)
+	platformIAM.SeedAdmin("admin@platform.com", "adminpass123", "Platform Admin")
+
+	// Seed a user in other tenant
+	otherIAM := iamStore.ForTenant(otherTn.ID)
+	otherIAM.CreateUser("user@other.com", "password123", "Other User")
+
+	registry := iam.NewTokenRegistry(iamStore, "http://test-issuer")
+	iamHandler := iam.NewHandler(iamStore, registry, "http://test-issuer")
+	iamHandler.PlatformTenantID = platformTn.ID
+	mktHandler := marketing.NewHandler(mktStore, iamStore, registry)
+	mktHandler.PlatformTenantID = platformTn.ID
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/login", iamHandler.Login)
+	mux.HandleFunc("/admin/users", iamHandler.AdminListUsers)
+	mux.HandleFunc("/admin/contacts", mktHandler.AdminContacts)
+
+	handler := tenant.Middleware(tenantStore, platformTn.ID)(mux)
+	srv := httptest.NewServer(handler)
+	t.Cleanup(srv.Close)
+
+	// Login as platform admin (via path prefix)
+	loginBody := `{"email":"admin@platform.com","password":"adminpass123"}`
+	resp, err := http.Post(srv.URL+"/t/platform/login", "application/json", strings.NewReader(loginBody))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var tok struct {
+		AccessToken string `json:"access_token"`
+	}
+	json.NewDecoder(resp.Body).Decode(&tok)
+	resp.Body.Close()
+	if tok.AccessToken == "" {
+		t.Fatal("platform admin login failed")
+	}
+
+	// Access other tenant's users using X-Tenant header
+	req, _ := http.NewRequest("GET", srv.URL+"/admin/users", nil)
+	req.Header.Set("Authorization", "Bearer "+tok.AccessToken)
+	req.Header.Set("X-Tenant", "other-app")
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		t.Errorf("platform admin accessing other tenant users: status = %d, want 200, body = %s", resp.StatusCode, b)
 	}
 }

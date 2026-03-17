@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -134,7 +135,7 @@ func TestHealthEndpoint(t *testing.T) {
 
 func TestRegister(t *testing.T) {
 	env := newHandlerEnv(t)
-	resp := postJSON(t, env, "/register", `{"email":"new@example.com","password":"secret","name":"New"}`)
+	resp := postJSON(t, env, "/register", `{"email":"new@example.com","password":"secret12","name":"New"}`)
 	if resp.StatusCode != http.StatusCreated {
 		b, _ := io.ReadAll(resp.Body)
 		t.Fatalf("status = %d, body = %s", resp.StatusCode, b)
@@ -147,8 +148,8 @@ func TestRegister(t *testing.T) {
 
 func TestRegisterDuplicate(t *testing.T) {
 	env := newHandlerEnv(t)
-	postJSON(t, env, "/register", `{"email":"dup@example.com","password":"secret","name":"Dup"}`).Body.Close()
-	resp := postJSON(t, env, "/register", `{"email":"dup@example.com","password":"secret","name":"Dup2"}`)
+	postJSON(t, env, "/register", `{"email":"dup@example.com","password":"secret12","name":"Dup"}`).Body.Close()
+	resp := postJSON(t, env, "/register", `{"email":"dup@example.com","password":"secret12","name":"Dup2"}`)
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusConflict {
 		t.Errorf("status = %d, want 409", resp.StatusCode)
@@ -157,7 +158,7 @@ func TestRegisterDuplicate(t *testing.T) {
 
 func TestRegisterInvalidEmail(t *testing.T) {
 	env := newHandlerEnv(t)
-	resp := postJSON(t, env, "/register", `{"email":"bad","password":"secret","name":"Bad"}`)
+	resp := postJSON(t, env, "/register", `{"email":"bad","password":"secret12","name":"Bad"}`)
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Errorf("status = %d", resp.StatusCode)
@@ -175,7 +176,7 @@ func TestRegisterNoPassword(t *testing.T) {
 
 func TestRegisterNoName(t *testing.T) {
 	env := newHandlerEnv(t)
-	resp := postJSON(t, env, "/register", `{"email":"nn@example.com","password":"secret"}`)
+	resp := postJSON(t, env, "/register", `{"email":"nn@example.com","password":"secret12"}`)
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Errorf("status = %d", resp.StatusCode)
@@ -195,9 +196,9 @@ func TestRegisterMethodNotAllowed(t *testing.T) {
 
 func TestLogin(t *testing.T) {
 	env := newHandlerEnv(t)
-	postJSON(t, env, "/register", `{"email":"login@example.com","password":"secret","name":"Login"}`).Body.Close()
+	postJSON(t, env, "/register", `{"email":"login@example.com","password":"secret12","name":"Login"}`).Body.Close()
 
-	resp := postJSON(t, env, "/login", `{"email":"login@example.com","password":"secret"}`)
+	resp := postJSON(t, env, "/login", `{"email":"login@example.com","password":"secret12"}`)
 	if resp.StatusCode != http.StatusOK {
 		b, _ := io.ReadAll(resp.Body)
 		t.Fatalf("status = %d, body = %s", resp.StatusCode, b)
@@ -216,7 +217,7 @@ func TestLogin(t *testing.T) {
 
 func TestLoginWrongPassword(t *testing.T) {
 	env := newHandlerEnv(t)
-	postJSON(t, env, "/register", `{"email":"lw@example.com","password":"secret","name":"LW"}`).Body.Close()
+	postJSON(t, env, "/register", `{"email":"lw@example.com","password":"secret12","name":"LW"}`).Body.Close()
 	resp := postJSON(t, env, "/login", `{"email":"lw@example.com","password":"wrong"}`)
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusUnauthorized {
@@ -237,8 +238,8 @@ func TestLoginMethodNotAllowed(t *testing.T) {
 
 func TestUserInfo(t *testing.T) {
 	env := newHandlerEnv(t)
-	postJSON(t, env, "/register", `{"email":"ui@example.com","password":"secret","name":"UI"}`).Body.Close()
-	resp := postJSON(t, env, "/login", `{"email":"ui@example.com","password":"secret"}`)
+	postJSON(t, env, "/register", `{"email":"ui@example.com","password":"secret12","name":"UI"}`).Body.Close()
+	resp := postJSON(t, env, "/login", `{"email":"ui@example.com","password":"secret12"}`)
 	tok := readJSON(t, resp)["access_token"].(string)
 
 	resp = doReq(t, env, "GET", "/userinfo", tok, "")
@@ -304,8 +305,8 @@ func TestDiscovery(t *testing.T) {
 
 func TestRevoke(t *testing.T) {
 	env := newHandlerEnv(t)
-	postJSON(t, env, "/register", `{"email":"rev@example.com","password":"secret","name":"Rev"}`).Body.Close()
-	resp := postJSON(t, env, "/login", `{"email":"rev@example.com","password":"secret"}`)
+	postJSON(t, env, "/register", `{"email":"rev@example.com","password":"secret12","name":"Rev"}`).Body.Close()
+	resp := postJSON(t, env, "/login", `{"email":"rev@example.com","password":"secret12"}`)
 	tok := readJSON(t, resp)
 	rt := tok["refresh_token"].(string)
 
@@ -346,7 +347,8 @@ func TestRevokeMethodNotAllowed(t *testing.T) {
 
 func TestCreateClientEndpoint(t *testing.T) {
 	env := newHandlerEnv(t)
-	resp := postJSON(t, env, "/clients",
+	tok := adminToken(t, env)
+	resp := doReq(t, env, "POST", "/clients", tok,
 		`{"name":"MyApp","redirect_uris":["http://localhost/cb"]}`)
 	if resp.StatusCode != http.StatusCreated {
 		b, _ := io.ReadAll(resp.Body)
@@ -363,7 +365,8 @@ func TestCreateClientEndpoint(t *testing.T) {
 
 func TestCreateClientNoName(t *testing.T) {
 	env := newHandlerEnv(t)
-	resp := postJSON(t, env, "/clients", `{"redirect_uris":["http://localhost/cb"]}`)
+	tok := adminToken(t, env)
+	resp := doReq(t, env, "POST", "/clients", tok, `{"redirect_uris":["http://localhost/cb"]}`)
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Errorf("status = %d", resp.StatusCode)
@@ -372,7 +375,8 @@ func TestCreateClientNoName(t *testing.T) {
 
 func TestCreateClientNoRedirectURIs(t *testing.T) {
 	env := newHandlerEnv(t)
-	resp := postJSON(t, env, "/clients", `{"name":"NoURIs"}`)
+	tok := adminToken(t, env)
+	resp := doReq(t, env, "POST", "/clients", tok, `{"name":"NoURIs"}`)
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Errorf("status = %d", resp.StatusCode)
@@ -392,8 +396,8 @@ func TestCreateClientMethodNotAllowed(t *testing.T) {
 
 func TestTokenRefreshTokenGrant(t *testing.T) {
 	env := newHandlerEnv(t)
-	postJSON(t, env, "/register", `{"email":"tok@example.com","password":"secret","name":"Tok"}`).Body.Close()
-	resp := postJSON(t, env, "/login", `{"email":"tok@example.com","password":"secret"}`)
+	postJSON(t, env, "/register", `{"email":"tok@example.com","password":"secret12","name":"Tok"}`).Body.Close()
+	resp := postJSON(t, env, "/login", `{"email":"tok@example.com","password":"secret12"}`)
 	tok := readJSON(t, resp)
 	rt := tok["refresh_token"].(string)
 
@@ -474,13 +478,14 @@ func TestAuthorizeGET(t *testing.T) {
 
 func TestAuthorizePOST(t *testing.T) {
 	env := newHandlerEnv(t)
+	tok := adminToken(t, env)
 
 	// Create client and user
-	resp := postJSON(t, env, "/clients", `{"name":"AuthApp","redirect_uris":["http://localhost/cb"]}`)
+	resp := doReq(t, env, "POST", "/clients", tok, `{"name":"AuthApp","redirect_uris":["http://localhost/cb"]}`)
 	client := readJSON(t, resp)
 	clientID := client["client_id"].(string)
 
-	postJSON(t, env, "/register", `{"email":"auth@example.com","password":"secret","name":"Auth"}`).Body.Close()
+	postJSON(t, env, "/register", `{"email":"auth@example.com","password":"secret12","name":"Auth"}`).Body.Close()
 
 	// POST authorize (don't follow redirects)
 	httpClient := &http.Client{CheckRedirect: func(req *http.Request, via []*http.Request) error {
@@ -490,7 +495,7 @@ func TestAuthorizePOST(t *testing.T) {
 		"client_id":    {clientID},
 		"redirect_uri": {"http://localhost/cb"},
 		"email":        {"auth@example.com"},
-		"password":     {"secret"},
+		"password":     {"secret12"},
 		"state":        {"mystate"},
 		"scope":        {"openid"},
 	}
@@ -513,12 +518,13 @@ func TestAuthorizePOST(t *testing.T) {
 
 func TestAuthorizePOSTWrongPassword(t *testing.T) {
 	env := newHandlerEnv(t)
+	tok := adminToken(t, env)
 
-	resp := postJSON(t, env, "/clients", `{"name":"App","redirect_uris":["http://localhost/cb"]}`)
+	resp := doReq(t, env, "POST", "/clients", tok, `{"name":"App","redirect_uris":["http://localhost/cb"]}`)
 	client := readJSON(t, resp)
 	clientID := client["client_id"].(string)
 
-	postJSON(t, env, "/register", `{"email":"wp@example.com","password":"secret","name":"WP"}`).Body.Close()
+	postJSON(t, env, "/register", `{"email":"wp@example.com","password":"secret12","name":"WP"}`).Body.Close()
 
 	form := url.Values{
 		"client_id":    {clientID},
@@ -546,14 +552,15 @@ func TestAuthorizeMethodNotAllowed(t *testing.T) {
 
 func TestFullAuthCodeFlowWithPKCE(t *testing.T) {
 	env := newHandlerEnv(t)
+	tok := adminToken(t, env)
 
 	// Create client
-	resp := postJSON(t, env, "/clients", `{"name":"PKCE","redirect_uris":["http://localhost/cb"]}`)
+	resp := doReq(t, env, "POST", "/clients", tok, `{"name":"PKCE","redirect_uris":["http://localhost/cb"]}`)
 	client := readJSON(t, resp)
 	clientID := client["client_id"].(string)
 
 	// Register user
-	postJSON(t, env, "/register", `{"email":"pkce@example.com","password":"secret","name":"PKCE"}`).Body.Close()
+	postJSON(t, env, "/register", `{"email":"pkce@example.com","password":"secret12","name":"PKCE"}`).Body.Close()
 
 	// Generate PKCE
 	verifier := "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"
@@ -568,7 +575,7 @@ func TestFullAuthCodeFlowWithPKCE(t *testing.T) {
 		"client_id":             {clientID},
 		"redirect_uri":         {"http://localhost/cb"},
 		"email":                {"pkce@example.com"},
-		"password":             {"secret"},
+		"password":             {"secret12"},
 		"scope":                {"openid"},
 		"code_challenge":       {challenge},
 		"code_challenge_method": {"S256"},
@@ -593,11 +600,11 @@ func TestFullAuthCodeFlowWithPKCE(t *testing.T) {
 		b, _ := io.ReadAll(resp.Body)
 		t.Fatalf("token exchange: status = %d, body = %s", resp.StatusCode, b)
 	}
-	tok := readJSON(t, resp)
-	if tok["access_token"] == nil {
+	tokenResp := readJSON(t, resp)
+	if tokenResp["access_token"] == nil {
 		t.Error("no access_token")
 	}
-	if tok["id_token"] == nil {
+	if tokenResp["id_token"] == nil {
 		t.Error("no id_token")
 	}
 }
@@ -632,8 +639,8 @@ func TestAdminListUsersUnauthorized(t *testing.T) {
 func TestAdminListUsersForbiddenForNonAdmin(t *testing.T) {
 	env := newHandlerEnv(t)
 
-	postJSON(t, env, "/register", `{"email":"regular@example.com","password":"secret","name":"Regular"}`).Body.Close()
-	resp := postJSON(t, env, "/login", `{"email":"regular@example.com","password":"secret"}`)
+	postJSON(t, env, "/register", `{"email":"regular@example.com","password":"secret12","name":"Regular"}`).Body.Close()
+	resp := postJSON(t, env, "/login", `{"email":"regular@example.com","password":"secret12"}`)
 	tok := readJSON(t, resp)["access_token"].(string)
 
 	resp = doReq(t, env, "GET", "/admin/users", tok, "")
@@ -648,7 +655,7 @@ func TestAdminGetUserByID(t *testing.T) {
 	tok := adminToken(t, env)
 
 	// Register a user
-	resp := postJSON(t, env, "/register", `{"email":"get@example.com","password":"secret","name":"Get"}`)
+	resp := postJSON(t, env, "/register", `{"email":"get@example.com","password":"secret12","name":"Get"}`)
 	created := readJSON(t, resp)
 	id := created["id"].(string)
 
@@ -666,7 +673,7 @@ func TestAdminUpdateUser(t *testing.T) {
 	env := newHandlerEnv(t)
 	tok := adminToken(t, env)
 
-	resp := postJSON(t, env, "/register", `{"email":"upd@example.com","password":"secret","name":"Old"}`)
+	resp := postJSON(t, env, "/register", `{"email":"upd@example.com","password":"secret12","name":"Old"}`)
 	created := readJSON(t, resp)
 	id := created["id"].(string)
 
@@ -687,7 +694,7 @@ func TestAdminUpdateUserInvalidRole(t *testing.T) {
 	env := newHandlerEnv(t)
 	tok := adminToken(t, env)
 
-	resp := postJSON(t, env, "/register", `{"email":"role@example.com","password":"secret","name":"Role"}`)
+	resp := postJSON(t, env, "/register", `{"email":"role@example.com","password":"secret12","name":"Role"}`)
 	created := readJSON(t, resp)
 	id := created["id"].(string)
 
@@ -702,7 +709,7 @@ func TestAdminDeleteUser(t *testing.T) {
 	env := newHandlerEnv(t)
 	tok := adminToken(t, env)
 
-	resp := postJSON(t, env, "/register", `{"email":"del@example.com","password":"secret","name":"Del"}`)
+	resp := postJSON(t, env, "/register", `{"email":"del@example.com","password":"secret12","name":"Del"}`)
 	created := readJSON(t, resp)
 	id := created["id"].(string)
 
@@ -748,7 +755,7 @@ func TestAdminDeleteClientEndpoint(t *testing.T) {
 	env := newHandlerEnv(t)
 	tok := adminToken(t, env)
 
-	resp := postJSON(t, env, "/clients", `{"name":"DelApp","redirect_uris":["http://del/cb"]}`)
+	resp := doReq(t, env, "POST", "/clients", tok, `{"name":"DelApp","redirect_uris":["http://del/cb"]}`)
 	client := readJSON(t, resp)
 	clientID := client["client_id"].(string)
 
@@ -825,5 +832,134 @@ func TestActivatePOSTShortPassword(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Errorf("status = %d, want 400", resp.StatusCode)
+	}
+}
+
+// --- C-2: Password minimum on /register ---
+
+func TestRegisterShortPassword(t *testing.T) {
+	env := newHandlerEnv(t)
+	resp := postJSON(t, env, "/register", `{"email":"short@example.com","password":"abc","name":"Short"}`)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("short password: status = %d, want 400", resp.StatusCode)
+	}
+}
+
+// --- M-4: Cache-Control on token responses ---
+
+func TestLoginResponseCacheHeaders(t *testing.T) {
+	env := newHandlerEnv(t)
+	postJSON(t, env, "/register", `{"email":"cache@example.com","password":"longpassword","name":"Cache"}`).Body.Close()
+	resp := postJSON(t, env, "/login", `{"email":"cache@example.com","password":"longpassword"}`)
+	defer resp.Body.Close()
+	if resp.Header.Get("Cache-Control") != "no-store" {
+		t.Errorf("Cache-Control = %q, want no-store", resp.Header.Get("Cache-Control"))
+	}
+	if resp.Header.Get("Pragma") != "no-cache" {
+		t.Errorf("Pragma = %q, want no-cache", resp.Header.Get("Pragma"))
+	}
+}
+
+func TestTokenResponseCacheHeaders(t *testing.T) {
+	env := newHandlerEnv(t)
+	postJSON(t, env, "/register", `{"email":"tcache@example.com","password":"longpassword","name":"TC"}`).Body.Close()
+	resp := postJSON(t, env, "/login", `{"email":"tcache@example.com","password":"longpassword"}`)
+	tok := readJSON(t, resp)
+	rt := tok["refresh_token"].(string)
+
+	resp, _ = http.PostForm(env.srv.URL+"/token", url.Values{
+		"grant_type":    {"refresh_token"},
+		"refresh_token": {rt},
+	})
+	defer resp.Body.Close()
+	if resp.Header.Get("Cache-Control") != "no-store" {
+		t.Errorf("Cache-Control = %q, want no-store", resp.Header.Get("Cache-Control"))
+	}
+}
+
+// --- M-7: Email length validation ---
+
+func TestRegisterEmailTooLong(t *testing.T) {
+	env := newHandlerEnv(t)
+	long := strings.Repeat("a", 250) + "@b.co" // 255 chars > 254 limit
+	body := fmt.Sprintf(`{"email":"%s","password":"longpassword","name":"Long"}`, long)
+	resp := postJSON(t, env, "/register", body)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("long email: status = %d, want 400", resp.StatusCode)
+	}
+}
+
+// --- H-1: PKCE enforcement (no PKCE, no client_secret = must be rejected) ---
+
+func TestTokenAuthCodeNoPKCENoSecret(t *testing.T) {
+	env := newHandlerEnv(t)
+	tok := adminToken(t, env)
+
+	// Create client
+	resp := doReq(t, env, "POST", "/clients", tok, `{"name":"NoPKCE","redirect_uris":["http://localhost/cb"]}`)
+	client := readJSON(t, resp)
+	clientID := client["client_id"].(string)
+
+	// Register user
+	postJSON(t, env, "/register", `{"email":"nopkce@example.com","password":"longpassword","name":"NP"}`).Body.Close()
+
+	// Authorize WITHOUT code_challenge
+	httpClient := &http.Client{CheckRedirect: func(req *http.Request, via []*http.Request) error {
+		return http.ErrUseLastResponse
+	}}
+	form := url.Values{
+		"client_id":    {clientID},
+		"redirect_uri": {"http://localhost/cb"},
+		"email":        {"nopkce@example.com"},
+		"password":     {"longpassword"},
+		"scope":        {"openid"},
+	}
+	resp, _ = httpClient.PostForm(env.srv.URL+"/authorize", form)
+	loc, _ := url.Parse(resp.Header.Get("Location"))
+	resp.Body.Close()
+	code := loc.Query().Get("code")
+
+	// Exchange WITHOUT code_verifier AND WITHOUT client_secret
+	resp, _ = http.PostForm(env.srv.URL+"/token", url.Values{
+		"grant_type":   {"authorization_code"},
+		"code":         {code},
+		"redirect_uri": {"http://localhost/cb"},
+		"client_id":    {clientID},
+	})
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("no PKCE, no secret: status = %d, want 400", resp.StatusCode)
+	}
+}
+
+// --- Registration policy ---
+
+type denyRegistration struct{}
+
+func (denyRegistration) IsRegistrationEnabled(string) bool { return false }
+
+func TestRegisterDisabledByPolicy(t *testing.T) {
+	env := newHandlerEnv(t)
+	// Patch handler to deny registration
+	// We need to reach the handler — recreate with policy
+	db := env.store.DB()
+	store := NewStore(db)
+	key := env.tokens
+	registry := NewStaticTokenRegistry(key)
+	h := NewHandler(store, registry, "http://test-issuer")
+	h.Registration = denyRegistration{}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/register", h.Register)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	resp, _ := http.Post(srv.URL+"/register", "application/json",
+		strings.NewReader(`{"email":"blocked@example.com","password":"longpassword","name":"Blocked"}`))
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("registration disabled: status = %d, want 403", resp.StatusCode)
 	}
 }

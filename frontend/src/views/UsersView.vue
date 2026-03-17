@@ -1,29 +1,35 @@
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import { MagnifyingGlassIcon, ChevronDownIcon } from '@heroicons/vue/24/outline'
 import RoleBadge from '../components/RoleBadge.vue'
 import BaseInput from '../components/BaseInput.vue'
 import { getUsers, updateUser, deleteUser } from '../api/users.js'
 import { useToastStore } from '../stores/toast.js'
 import { useConfirm } from '../composables/useConfirm.js'
+import { useTenantStore } from '../stores/tenant.js'
 
 const toast = useToastStore()
 const { confirm } = useConfirm()
+const tenantStore = useTenantStore()
 
 const users = ref([])
 const loading = ref(true)
 const search = ref('')
 const openDropdown = ref(null)
 
-onMounted(async () => {
+async function loadData() {
+  loading.value = true
   try {
-    users.value = await getUsers()
+    users.value = (await getUsers()) || []
   } catch {
     toast.add('error', 'Failed to load users')
   } finally {
     loading.value = false
   }
-})
+}
+
+onMounted(loadData)
+watch(() => tenantStore.currentSlug, () => { if (!loading.value) loadData() })
 
 const filtered = computed(() => {
   const q = search.value.toLowerCase()

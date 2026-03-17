@@ -80,6 +80,10 @@ func newTestServer(t *testing.T) *httptest.Server {
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
 	}
+	// Seed admin so registerClient can authenticate
+	if err := store.SeedAdmin("admin@test.com", "adminpass123", "Admin"); err != nil {
+		t.Fatalf("SeedAdmin: %v", err)
+	}
 	rsaKey, err := store.LoadOrCreateRSAKey()
 	if err != nil {
 		t.Fatalf("LoadOrCreateRSAKey: %v", err)
@@ -144,6 +148,33 @@ func readBody(resp *http.Response) string {
 	return string(b)
 }
 
+// getAdminToken logs in as the pre-seeded admin and returns the access token.
+func getAdminToken(t *testing.T, srv *httptest.Server) string {
+	t.Helper()
+	resp := doJSON(t, srv, "/login", map[string]any{
+		"email":    "admin@test.com",
+		"password": "adminpass123",
+	})
+	assertStatus(t, resp, http.StatusOK)
+	var tr TokenResponse
+	decodeJSON(t, resp, &tr)
+	return tr.AccessToken
+}
+
+// doJSONWithAuth sends a JSON POST with an Authorization header.
+func doJSONWithAuth(t *testing.T, srv *httptest.Server, path string, body any, token string) *http.Response {
+	t.Helper()
+	b, _ := json.Marshal(body)
+	req, _ := http.NewRequest("POST", srv.URL+path, strings.NewReader(string(b)))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("POST %s: %v", path, err)
+	}
+	return resp
+}
+
 // decodeJSON decodes the JSON response body into dst.
 func decodeJSON(t *testing.T, resp *http.Response, dst any) {
 	t.Helper()
@@ -204,12 +235,32 @@ func loginUser(t *testing.T, srv *httptest.Server, email, password string) Token
 }
 
 // registerClient creates an OAuth2 client and returns the parsed response.
+// Requires an admin user seeded (admin@test.com / adminpass123) in the server.
 func registerClient(t *testing.T, srv *httptest.Server, name string, redirectURIs []string) ClientCreateResponse {
 	t.Helper()
-	resp := doJSON(t, srv, "/clients", map[string]any{
+	// Login as admin to get a token for client creation
+	loginResp := doJSON(t, srv, "/login", map[string]any{
+		"email":    "admin@test.com",
+		"password": "adminpass123",
+	})
+	assertStatus(t, loginResp, http.StatusOK)
+	var tr TokenResponse
+	decodeJSON(t, loginResp, &tr)
+
+	body, _ := json.Marshal(map[string]any{
 		"name":          name,
 		"redirect_uris": redirectURIs,
 	})
+	req, err := http.NewRequest("POST", srv.URL+"/clients", strings.NewReader(string(body)))
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+tr.AccessToken)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
 	assertStatus(t, resp, http.StatusCreated)
 	var cr ClientCreateResponse
 	decodeJSON(t, resp, &cr)
@@ -644,31 +695,34 @@ func TestClientRegistration(t *testing.T) {
 
 	t.Run("missing name returns 400", func(t *testing.T) {
 		srv := newTestServer(t)
+		token := getAdminToken(t, srv)
 
-		resp := doJSON(t, srv, "/clients", map[string]any{
+		resp := doJSONWithAuth(t, srv, "/clients", map[string]any{
 			"redirect_uris": []string{"http://localhost:3000/callback"},
-		})
+		}, token)
 		assertStatus(t, resp, http.StatusBadRequest)
 		assertErrorCode(t, resp, "invalid_request")
 	})
 
 	t.Run("missing redirect_uris returns 400", func(t *testing.T) {
 		srv := newTestServer(t)
+		token := getAdminToken(t, srv)
 
-		resp := doJSON(t, srv, "/clients", map[string]any{
+		resp := doJSONWithAuth(t, srv, "/clients", map[string]any{
 			"name": "No Redirects",
-		})
+		}, token)
 		assertStatus(t, resp, http.StatusBadRequest)
 		assertErrorCode(t, resp, "invalid_request")
 	})
 
 	t.Run("empty redirect_uris returns 400", func(t *testing.T) {
 		srv := newTestServer(t)
+		token := getAdminToken(t, srv)
 
-		resp := doJSON(t, srv, "/clients", map[string]any{
+		resp := doJSONWithAuth(t, srv, "/clients", map[string]any{
 			"name":          "Empty Redirects",
 			"redirect_uris": []string{},
-		})
+		}, token)
 		assertStatus(t, resp, http.StatusBadRequest)
 		assertErrorCode(t, resp, "invalid_request")
 	})
@@ -1823,6 +1877,10 @@ func newTestEnv(t *testing.T) *testEnv {
 	store, err := NewStore(":memory:")
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
+	}
+	// Seed admin so registerClient can authenticate
+	if err := store.SeedAdmin("admin@test.com", "adminpass123", "Admin"); err != nil {
+		t.Fatalf("SeedAdmin: %v", err)
 	}
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
@@ -3937,6 +3995,10 @@ func newTestEnvWithMailer(t *testing.T, mailer Mailer) *testEnv {
 	store, err := NewStore(":memory:")
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
+	}
+	// Seed admin so registerClient can authenticate
+	if err := store.SeedAdmin("admin@test.com", "adminpass123", "Admin"); err != nil {
+		t.Fatalf("SeedAdmin: %v", err)
 	}
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {

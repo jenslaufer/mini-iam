@@ -8,6 +8,7 @@ import BaseButton from '../components/BaseButton.vue'
 const router = useRouter()
 const auth = useAuthStore()
 
+const tenant = ref('')
 const email = ref('')
 const password = ref('')
 const error = ref('')
@@ -17,7 +18,7 @@ async function submit() {
   error.value = ''
   loading.value = true
   try {
-    await auth.login(email.value, password.value)
+    await auth.login(email.value, password.value, tenant.value)
     router.push('/dashboard')
   } catch (e) {
     error.value =
@@ -50,6 +51,12 @@ async function submit() {
 
       <!-- Form -->
       <form @submit.prevent="submit" class="space-y-4">
+        <BaseInput
+          label="Tenant"
+          v-model="tenant"
+          placeholder="Leave empty for platform admin"
+          :disabled="loading"
+        />
         <BaseInput
           label="Email"
           type="email"

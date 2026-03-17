@@ -2,7 +2,9 @@ package tenant
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
+	"regexp"
 	"strings"
 
 	"github.com/jenslaufer/launch-kit/iam"
@@ -12,14 +14,15 @@ import (
 // --- Config types for import ---
 
 type ImportConfig struct {
-	Slug      string           `json:"slug"`
-	Name      string           `json:"name"`
-	SMTP      *SMTPConfig      `json:"smtp,omitempty"`
-	Admin     *AdminConfig     `json:"admin,omitempty"`
-	Clients   []ClientConfig   `json:"clients,omitempty"`
-	Segments  []SegmentConfig  `json:"segments,omitempty"`
-	Contacts  []ContactConfig  `json:"contacts,omitempty"`
-	Campaigns []CampaignConfig `json:"campaigns,omitempty"`
+	Slug                string           `json:"slug"`
+	Name                string           `json:"name"`
+	RegistrationEnabled bool             `json:"registration_enabled"`
+	SMTP                *SMTPConfig      `json:"smtp,omitempty"`
+	Admin               *AdminConfig     `json:"admin,omitempty"`
+	Clients             []ClientConfig   `json:"clients,omitempty"`
+	Segments            []SegmentConfig  `json:"segments,omitempty"`
+	Contacts            []ContactConfig  `json:"contacts,omitempty"`
+	Campaigns           []CampaignConfig `json:"campaigns,omitempty"`
 }
 
 type AdminConfig struct {
@@ -55,6 +58,25 @@ type CampaignConfig struct {
 type ImportResult struct {
 	TenantID string
 	Skipped  bool
+	Clients  []ClientImported
+}
+
+// ClientImported holds created client details for import responses.
+type ClientImported struct {
+	Name         string   `json:"name"`
+	ClientID     string   `json:"client_id"`
+	ClientSecret string   `json:"client_secret"`
+	RedirectURIs []string `json:"redirect_uris"`
+}
+
+var slugRegex = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,62}$`)
+
+// ValidateSlug checks that a slug matches the required format.
+func ValidateSlug(slug string) error {
+	if !slugRegex.MatchString(slug) {
+		return fmt.Errorf("slug must match ^[a-z0-9][a-z0-9-]{0,62}$")
+	}
+	return nil
 }
 
 // --- Import response types ---
@@ -62,14 +84,7 @@ type ImportResult struct {
 type importResponse struct {
 	TenantID string           `json:"tenant_id"`
 	Slug     string           `json:"slug"`
-	Clients  []clientImported `json:"clients,omitempty"`
-}
-
-type clientImported struct {
-	Name         string   `json:"name"`
-	ClientID     string   `json:"client_id"`
-	ClientSecret string   `json:"client_secret"`
-	RedirectURIs []string `json:"redirect_uris"`
+	Clients  []ClientImported `json:"clients,omitempty"`
 }
 
 // --- Programmatic import ---
@@ -77,6 +92,10 @@ type clientImported struct {
 // ImportTenantConfig imports a full tenant configuration. If the tenant already
 // exists (by slug), it returns the existing tenant ID with Skipped=true.
 func ImportTenantConfig(tenantStore *Store, iamStore *iam.Store, mktStore *marketing.Store, cfg ImportConfig) (*ImportResult, error) {
+	if err := ValidateSlug(cfg.Slug); err != nil {
+		return nil, err
+	}
+
 	existing, err := tenantStore.GetBySlug(cfg.Slug)
 	if err == nil {
 		return &ImportResult{TenantID: existing.ID, Skipped: true}, nil
@@ -90,6 +109,9 @@ func ImportTenantConfig(tenantStore *Store, iamStore *iam.Store, mktStore *marke
 	if err != nil {
 		return nil, err
 	}
+	if cfg.RegistrationEnabled {
+		tenantStore.UpdateRegistrationEnabled(tn.ID, true)
+	}
 
 	scopedIAM := iamStore.ForTenant(tn.ID)
 	scopedMkt := mktStore.ForTenant(tn.ID)
@@ -100,10 +122,18 @@ func ImportTenantConfig(tenantStore *Store, iamStore *iam.Store, mktStore *marke
 		}
 	}
 
+	var clients []ClientImported
 	for _, c := range cfg.Clients {
-		if _, _, err := scopedIAM.CreateClient(c.Name, c.RedirectURIs); err != nil {
+		client, secret, err := scopedIAM.CreateClient(c.Name, c.RedirectURIs)
+		if err != nil {
 			return nil, err
 		}
+		clients = append(clients, ClientImported{
+			Name:         client.Name,
+			ClientID:     client.ID,
+			ClientSecret: secret,
+			RedirectURIs: client.RedirectURIs,
+		})
 	}
 
 	segmentMap := map[string]string{}
@@ -141,24 +171,26 @@ func ImportTenantConfig(tenantStore *Store, iamStore *iam.Store, mktStore *marke
 		}
 	}
 
-	return &ImportResult{TenantID: tn.ID}, nil
+	return &ImportResult{TenantID: tn.ID, Clients: clients}, nil
 }
 
 // --- HTTP handler ---
 
 type ExportImportHandler struct {
-	tenantStore *Store
-	iamStore    *iam.Store
-	mktStore    *marketing.Store
-	registry    *iam.TokenRegistry
+	tenantStore      *Store
+	iamStore         *iam.Store
+	mktStore         *marketing.Store
+	registry         *iam.TokenRegistry
+	PlatformTenantID string
 }
 
-func NewExportImportHandler(tenantStore *Store, iamStore *iam.Store, mktStore *marketing.Store, registry *iam.TokenRegistry) *ExportImportHandler {
+func NewExportImportHandler(tenantStore *Store, iamStore *iam.Store, mktStore *marketing.Store, registry *iam.TokenRegistry, platformTenantID string) *ExportImportHandler {
 	return &ExportImportHandler{
-		tenantStore: tenantStore,
-		iamStore:    iamStore,
-		mktStore:    mktStore,
-		registry:    registry,
+		tenantStore:      tenantStore,
+		iamStore:         iamStore,
+		mktStore:         mktStore,
+		registry:         registry,
+		PlatformTenantID: platformTenantID,
 	}
 }
 
@@ -169,7 +201,7 @@ func (h *ExportImportHandler) Import(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if _, ok := iam.CheckAdminCrossTenant(h.registry, h.iamStore, w, r); !ok {
+	if _, ok := iam.CheckAdminCrossTenant(h.registry, h.iamStore, h.PlatformTenantID, w, r); !ok {
 		return
 	}
 
@@ -184,87 +216,29 @@ func (h *ExportImportHandler) Import(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if _, err := h.tenantStore.GetBySlug(cfg.Slug); err == nil {
-		iam.WriteError(w, http.StatusConflict, "invalid_request", "tenant slug already exists")
+	if err := ValidateSlug(cfg.Slug); err != nil {
+		iam.WriteError(w, http.StatusBadRequest, "invalid_request", err.Error())
 		return
 	}
 
-	smtp := SMTPConfig{}
-	if cfg.SMTP != nil {
-		smtp = *cfg.SMTP
-	}
-	tn, err := h.tenantStore.CreateWithSMTP(cfg.Slug, cfg.Name, smtp)
+	result, err := ImportTenantConfig(h.tenantStore, h.iamStore, h.mktStore, cfg)
 	if err != nil {
 		if strings.Contains(err.Error(), "UNIQUE") {
 			iam.WriteError(w, http.StatusConflict, "invalid_request", "tenant slug already exists")
 			return
 		}
-		iam.WriteError(w, http.StatusInternalServerError, "server_error", "failed to create tenant")
+		iam.WriteError(w, http.StatusInternalServerError, "server_error", err.Error())
+		return
+	}
+	if result.Skipped {
+		iam.WriteError(w, http.StatusConflict, "invalid_request", "tenant slug already exists")
 		return
 	}
 
-	scopedIAM := h.iamStore.ForTenant(tn.ID)
-	scopedMkt := h.mktStore.ForTenant(tn.ID)
-
-	if cfg.Admin != nil && cfg.Admin.Email != "" {
-		if err := scopedIAM.SeedAdmin(cfg.Admin.Email, cfg.Admin.Password, "Admin"); err != nil {
-			iam.WriteError(w, http.StatusInternalServerError, "server_error", "failed to create admin")
-			return
-		}
-	}
-
-	var clients []clientImported
-	for _, c := range cfg.Clients {
-		client, secret, err := scopedIAM.CreateClient(c.Name, c.RedirectURIs)
-		if err != nil {
-			iam.WriteError(w, http.StatusInternalServerError, "server_error", "failed to create client")
-			return
-		}
-		clients = append(clients, clientImported{
-			Name:         client.Name,
-			ClientID:     client.ID,
-			ClientSecret: secret,
-			RedirectURIs: client.RedirectURIs,
-		})
-	}
-
-	segmentMap := map[string]string{}
-	for _, s := range cfg.Segments {
-		seg, err := scopedMkt.CreateSegment(s.Name, s.Description)
-		if err != nil {
-			iam.WriteError(w, http.StatusInternalServerError, "server_error", "failed to create segment")
-			return
-		}
-		segmentMap[s.Name] = seg.ID
-	}
-
-	for _, c := range cfg.Contacts {
-		contact, err := scopedMkt.CreateContact(c.Email, c.Name, c.ConsentSource)
-		if err != nil {
-			iam.WriteError(w, http.StatusInternalServerError, "server_error", "failed to create contact")
-			return
-		}
-		for _, segName := range c.Segments {
-			if segID, ok := segmentMap[segName]; ok {
-				scopedMkt.AddContactToSegment(contact.ID, segID)
-			}
-		}
-	}
-
-	for _, c := range cfg.Campaigns {
-		var segIDs []string
-		for _, segName := range c.Segments {
-			if segID, ok := segmentMap[segName]; ok {
-				segIDs = append(segIDs, segID)
-			}
-		}
-		scopedMkt.CreateCampaign(c.Subject, c.HTMLBody, c.FromName, c.FromEmail, segIDs)
-	}
-
 	iam.WriteJSON(w, http.StatusCreated, importResponse{
-		TenantID: tn.ID,
-		Slug:     tn.Slug,
-		Clients:  clients,
+		TenantID: result.TenantID,
+		Slug:     cfg.Slug,
+		Clients:  result.Clients,
 	})
 }
 
@@ -286,7 +260,7 @@ func (h *ExportImportHandler) handleExport(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	if _, ok := iam.CheckAdminCrossTenant(h.registry, h.iamStore, w, r); !ok {
+	if _, ok := iam.CheckAdminCrossTenant(h.registry, h.iamStore, h.PlatformTenantID, w, r); !ok {
 		return
 	}
 
@@ -300,17 +274,17 @@ func (h *ExportImportHandler) handleExport(w http.ResponseWriter, r *http.Reques
 	scopedMkt := h.mktStore.ForTenant(tn.ID)
 
 	export := map[string]interface{}{
-		"slug": tn.Slug,
-		"name": tn.Name,
+		"slug":                 tn.Slug,
+		"name":                 tn.Name,
+		"registration_enabled": tn.RegistrationEnabled,
 	}
 
-	// SMTP config (only if configured)
+	// SMTP config (only if configured); password is never exported
 	if tn.SMTP.Host != "" {
 		export["smtp"] = map[string]interface{}{
 			"smtp_host":      tn.SMTP.Host,
 			"smtp_port":      tn.SMTP.Port,
 			"smtp_user":      tn.SMTP.User,
-			"smtp_password":  tn.SMTP.Password,
 			"smtp_from":      tn.SMTP.From,
 			"smtp_from_name": tn.SMTP.FromName,
 			"smtp_rate_ms":   tn.SMTP.RateMS,
@@ -418,7 +392,7 @@ func (h *ExportImportHandler) handleExport(w http.ResponseWriter, r *http.Reques
 }
 
 func (h *ExportImportHandler) handleTenantByID(w http.ResponseWriter, r *http.Request, id string) {
-	if _, ok := iam.CheckAdminCrossTenant(h.registry, h.iamStore, w, r); !ok {
+	if _, ok := iam.CheckAdminCrossTenant(h.registry, h.iamStore, h.PlatformTenantID, w, r); !ok {
 		return
 	}
 
@@ -434,7 +408,10 @@ func (h *ExportImportHandler) handleTenantByID(w http.ResponseWriter, r *http.Re
 			iam.WriteError(w, http.StatusNotFound, "not_found", "tenant not found")
 			return
 		}
-		iam.WriteJSON(w, http.StatusOK, t)
+		// Sanitize: never expose SMTP password in API responses
+		sanitized := *t
+		sanitized.SMTP.Password = ""
+		iam.WriteJSON(w, http.StatusOK, &sanitized)
 	case http.MethodDelete:
 		if err := h.tenantStore.Delete(id); err != nil {
 			iam.WriteError(w, http.StatusNotFound, "not_found", "tenant not found")

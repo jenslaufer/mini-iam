@@ -1,7 +1,6 @@
 package iam
 
 import (
-	"fmt"
 	"sync"
 )
 
@@ -46,6 +45,15 @@ func (tr *TokenRegistry) ForTenant(tenantID, slug string) (*TokenService, error)
 		return ts, nil
 	}
 
+	// Double-checked locking: acquire write lock and check again
+	tr.mu.Lock()
+	ts, ok = tr.cache[tenantID]
+	if ok {
+		tr.mu.Unlock()
+		return ts, nil
+	}
+	tr.mu.Unlock()
+
 	scopedStore := tr.store.ForTenant(tenantID)
 	key, err := scopedStore.LoadOrCreateRSAKey()
 	if err != nil {
@@ -70,16 +78,3 @@ func (tr *TokenRegistry) BaseIssuer() string {
 	return tr.baseIssuer
 }
 
-// ValidateAnyTenant tries to validate the token against all cached tenant keys.
-// Used when the tenant is not yet known (e.g., before the tenant middleware runs).
-func (tr *TokenRegistry) ValidateAnyTenant(tokenString string) (*TokenService, error) {
-	if tr.fallback != nil {
-		return tr.fallback, nil
-	}
-	tr.mu.RLock()
-	defer tr.mu.RUnlock()
-	for _, ts := range tr.cache {
-		return ts, nil
-	}
-	return nil, fmt.Errorf("no tenant keys loaded")
-}

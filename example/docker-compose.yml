@@ -1,0 +1,67 @@
+services:
+  launch-kit:
+    image: ghcr.io/solytics/launch-kit:latest
+    ports:
+      - "${IAM_PORT}:8080"
+    volumes:
+      - launch-kit-data:/data
+      - ./tenant-demo.json:/data/tenant-demo.json
+    environment:
+      PORT: "${PORT}"
+      ISSUER_URL: "${ISSUER_URL}"
+      CORS_ORIGINS: "${CORS_ORIGINS}"
+      ADMIN_EMAIL: "${ADMIN_EMAIL}"
+      ADMIN_PASSWORD: "${ADMIN_PASSWORD}"
+      DEFAULT_TENANT: "${DEFAULT_TENANT}"
+      TENANT_CONFIG: "/data/tenant-demo.json"
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:8080/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+    restart: unless-stopped
+
+  frontend:
+    image: ghcr.io/solytics/launch-kit-frontend:latest
+    ports:
+      - "${EXTERNAL_PORT}:3000"
+    depends_on:
+      launch-kit:
+        condition: service_healthy
+    restart: unless-stopped
+
+  demo-backend:
+    build: ./demo-backend
+    environment:
+      OIDC_ISSUER_URL: "${OIDC_ISSUER_URL}"
+      OIDC_JWKS_URI: "${OIDC_JWKS_URI}"
+      OIDC_AUDIENCE: "${OIDC_AUDIENCE}"
+    healthcheck:
+      test: ["CMD-SHELL", "python -c 'import urllib.request; urllib.request.urlopen(\"http://localhost:8000/api/health\")'"]
+      interval: 10s
+      timeout: 5s
+      start_period: 5s
+      retries: 3
+    depends_on:
+      launch-kit:
+        condition: service_healthy
+    restart: unless-stopped
+
+  demo-frontend:
+    build:
+      context: ./demo-frontend
+      args:
+        VITE_OIDC_ISSUER_URL: "${VITE_OIDC_ISSUER_URL}"
+        VITE_API_URL: "${VITE_API_URL}"
+    ports:
+      - "${DEMO_PORT}:3000"
+    depends_on:
+      launch-kit:
+        condition: service_healthy
+      demo-backend:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  launch-kit-data:

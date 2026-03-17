@@ -108,7 +108,7 @@ func newExportEnv(t *testing.T) *exportEnv {
 	_ = mktHandler
 
 	// Import/export handler — to be implemented in the tenant package.
-	exportHandler := tenant.NewExportImportHandler(tenantStore, iamStore, mktStore, registry)
+	exportHandler := tenant.NewExportImportHandler(tenantStore, iamStore, mktStore, registry, "")
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/login", iamHandler.Login)
@@ -1001,5 +1001,358 @@ func TestImportTenantConfig_SeedsSegmentsAndContacts(t *testing.T) {
 	}
 	if len(segs) != 1 || segs[0].Name != "users" {
 		t.Errorf("contact segments = %v, want [users]", segs)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// 1. Slug validation
+// ---------------------------------------------------------------------------
+
+func TestSlugValidation_RejectsUppercase(t *testing.T) {
+	db := newRoutingDB(t)
+	store := tenant.NewStore(db)
+	_, err := store.Create("UPPER", "name")
+	if err == nil {
+		t.Error("expected error for uppercase slug, got nil")
+	}
+}
+
+func TestSlugValidation_RejectsSpecialChars(t *testing.T) {
+	db := newRoutingDB(t)
+	store := tenant.NewStore(db)
+	_, err := store.Create("my/slug", "name")
+	if err == nil {
+		t.Error("expected error for slug with '/', got nil")
+	}
+}
+
+func TestSlugValidation_RejectsSpaces(t *testing.T) {
+	db := newRoutingDB(t)
+	store := tenant.NewStore(db)
+	_, err := store.Create("my slug", "name")
+	if err == nil {
+		t.Error("expected error for slug with space, got nil")
+	}
+}
+
+func TestSlugValidation_AcceptsValid(t *testing.T) {
+	db := newRoutingDB(t)
+	store := tenant.NewStore(db)
+	tn, err := store.Create("my-tenant-1", "name")
+	if err != nil {
+		t.Errorf("expected no error for valid slug, got: %v", err)
+	}
+	if tn == nil {
+		t.Error("expected non-nil tenant")
+	}
+}
+
+func TestSlugValidation_RejectsEmpty(t *testing.T) {
+	db := newRoutingDB(t)
+	store := tenant.NewStore(db)
+	_, err := store.Create("", "name")
+	if err == nil {
+		t.Error("expected error for empty slug, got nil")
+	}
+}
+
+func TestSlugValidation_RejectsStartsWithDash(t *testing.T) {
+	db := newRoutingDB(t)
+	store := tenant.NewStore(db)
+	_, err := store.Create("-bad", "name")
+	if err == nil {
+		t.Error("expected error for slug starting with dash, got nil")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// 2. Platform admin restriction
+// ---------------------------------------------------------------------------
+
+// newExportEnvWithPlatform wires a server identical to newExportEnv but sets
+// the platform tenant ID on the ExportImportHandler, enforcing that only
+// platform-tenant admins may call import/export.
+func newExportEnvWithPlatform(t *testing.T, platformTenantID string) *exportEnv {
+	t.Helper()
+	db := newRoutingDB(t)
+
+	tenantStore := tenant.NewStore(db)
+	iamStore := iam.NewStore(db)
+	mktStore := marketing.NewStore(db)
+
+	registry := iam.NewTokenRegistry(iamStore, "http://test-issuer")
+
+	iamHandler := iam.NewHandler(iamStore, registry, "http://test-issuer")
+
+	exportHandler := tenant.NewExportImportHandler(tenantStore, iamStore, mktStore, registry, platformTenantID)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/login", iamHandler.Login)
+	mux.HandleFunc("/admin/tenants/import", exportHandler.Import)
+	mux.HandleFunc("/admin/tenants/", exportHandler.ExportOrDelete)
+
+	handler := tenant.Middleware(tenantStore, "")(mux)
+	srv := httptest.NewServer(handler)
+	t.Cleanup(srv.Close)
+
+	return &exportEnv{
+		srv:         srv,
+		tenantStore: tenantStore,
+		iamStore:    iamStore,
+		mktStore:    mktStore,
+		registry:    registry,
+	}
+}
+
+func TestExport_NonPlatformAdminGetsForbidden(t *testing.T) {
+	// Create an env without a platform restriction first so we can seed tenants.
+	setupEnv := newExportEnv(t)
+
+	// Create the platform tenant and get its ID.
+	platformTn, err := setupEnv.tenantStore.Create("platform", "Platform")
+	if err != nil {
+		t.Fatalf("create platform tenant: %v", err)
+	}
+
+	// Create another tenant whose admin will try to export the platform tenant.
+	otherTn, tok := seedFullTenant(t, setupEnv, "other-tenant")
+	_ = otherTn
+
+	// Now build a restricted env that shares the same DB records but enforces
+	// the platform tenant ID. We do this by wiring a new handler against the
+	// same stores.
+	registry := setupEnv.registry
+	restrictedHandler := tenant.NewExportImportHandler(
+		setupEnv.tenantStore, setupEnv.iamStore, setupEnv.mktStore,
+		registry, platformTn.ID,
+	)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/admin/tenants/", restrictedHandler.ExportOrDelete)
+	restrictedSrv := httptest.NewServer(tenant.Middleware(setupEnv.tenantStore, "")(mux))
+	t.Cleanup(restrictedSrv.Close)
+
+	req, _ := http.NewRequest(http.MethodGet,
+		restrictedSrv.URL+"/admin/tenants/"+platformTn.ID+"/export", nil)
+	req.Header.Set("Authorization", "Bearer "+tok)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("export request: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusForbidden {
+		raw, _ := io.ReadAll(resp.Body)
+		t.Errorf("expected 403 for non-platform admin, got %d: %s", resp.StatusCode, raw)
+	}
+}
+
+func TestImport_NonPlatformAdminGetsForbidden(t *testing.T) {
+	setupEnv := newExportEnv(t)
+
+	// Create the platform tenant.
+	platformTn, err := setupEnv.tenantStore.Create("platform2", "Platform2")
+	if err != nil {
+		t.Fatalf("create platform tenant: %v", err)
+	}
+
+	// Create a regular tenant and get its admin token.
+	_, tok := seedFullTenant(t, setupEnv, "regular-tenant")
+
+	// Wire a restricted handler that requires the platform tenant.
+	registry := setupEnv.registry
+	restrictedHandler := tenant.NewExportImportHandler(
+		setupEnv.tenantStore, setupEnv.iamStore, setupEnv.mktStore,
+		registry, platformTn.ID,
+	)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/admin/tenants/import", restrictedHandler.Import)
+	restrictedSrv := httptest.NewServer(tenant.Middleware(setupEnv.tenantStore, "")(mux))
+	t.Cleanup(restrictedSrv.Close)
+
+	payload := TenantExport{Slug: "should-fail", Name: "Should Fail"}
+	b, _ := json.Marshal(payload)
+	req, _ := http.NewRequest(http.MethodPost, restrictedSrv.URL+"/admin/tenants/import", bytes.NewReader(b))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+tok)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("import request: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusForbidden {
+		raw, _ := io.ReadAll(resp.Body)
+		t.Errorf("expected 403 for non-platform admin, got %d: %s", resp.StatusCode, raw)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// 3. Cascading tenant delete
+// ---------------------------------------------------------------------------
+
+func TestDeleteTenant_CascadesAllData(t *testing.T) {
+	db := newRoutingDB(t)
+	tenantStore := tenant.NewStore(db)
+	iamStore := iam.NewStore(db)
+	mktStore := marketing.NewStore(db)
+
+	// Create a tenant with a full set of data.
+	tn, err := tenantStore.Create("delete-me", "Delete Me")
+	if err != nil {
+		t.Fatalf("create tenant: %v", err)
+	}
+
+	iamScoped := iamStore.ForTenant(tn.ID)
+	mktScoped := mktStore.ForTenant(tn.ID)
+
+	if err := iamScoped.SeedAdmin("admin@delete.com", "deletepass1", "Admin"); err != nil {
+		t.Fatalf("SeedAdmin: %v", err)
+	}
+	_, _, err = iamScoped.CreateClient("Test Client", []string{"https://example.com/cb"})
+	if err != nil {
+		t.Fatalf("CreateClient: %v", err)
+	}
+	seg, err := mktScoped.CreateSegment("list", "A list")
+	if err != nil {
+		t.Fatalf("CreateSegment: %v", err)
+	}
+	contact, err := mktScoped.CreateContact("user@delete.com", "User", "api")
+	if err != nil {
+		t.Fatalf("CreateContact: %v", err)
+	}
+	if err := mktScoped.AddContactToSegment(contact.ID, seg.ID); err != nil {
+		t.Fatalf("AddContactToSegment: %v", err)
+	}
+	_, err = mktScoped.CreateCampaign("Sub", "<p>body</p>", "From", "from@delete.com", []string{seg.ID})
+	if err != nil {
+		t.Fatalf("CreateCampaign: %v", err)
+	}
+
+	// Delete the tenant.
+	if err := tenantStore.Delete(tn.ID); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+
+	// Verify all data is gone.
+	users, err := iamScoped.ListUsers()
+	if err != nil {
+		t.Fatalf("ListUsers after delete: %v", err)
+	}
+	if len(users) != 0 {
+		t.Errorf("expected 0 users after delete, got %d", len(users))
+	}
+
+	clients, err := iamScoped.ListClients()
+	if err != nil {
+		t.Fatalf("ListClients after delete: %v", err)
+	}
+	if len(clients) != 0 {
+		t.Errorf("expected 0 clients after delete, got %d", len(clients))
+	}
+
+	segs, err := mktScoped.ListSegments()
+	if err != nil {
+		t.Fatalf("ListSegments after delete: %v", err)
+	}
+	if len(segs) != 0 {
+		t.Errorf("expected 0 segments after delete, got %d", len(segs))
+	}
+
+	contacts, err := mktScoped.ListContactsWithSegments()
+	if err != nil {
+		t.Fatalf("ListContactsWithSegments after delete: %v", err)
+	}
+	if len(contacts) != 0 {
+		t.Errorf("expected 0 contacts after delete, got %d", len(contacts))
+	}
+
+	campaigns, err := mktScoped.ListCampaigns()
+	if err != nil {
+		t.Fatalf("ListCampaigns after delete: %v", err)
+	}
+	if len(campaigns) != 0 {
+		t.Errorf("expected 0 campaigns after delete, got %d", len(campaigns))
+	}
+
+	// Verify the tenant itself is gone.
+	_, err = tenantStore.GetByID(tn.ID)
+	if err == nil {
+		t.Error("expected error fetching deleted tenant, got nil")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// 4. SMTP password masking in export
+// ---------------------------------------------------------------------------
+
+func TestExport_SMTPPasswordMasked(t *testing.T) {
+	env := newExportEnv(t)
+
+	smtpPassword := "super-secret-smtp-password"
+	tn, err := env.tenantStore.CreateWithSMTP("smtp-tenant", "SMTP Tenant", tenant.SMTPConfig{
+		Host:     "mail.example.com",
+		Port:     "587",
+		User:     "mailer@example.com",
+		Password: smtpPassword,
+		From:     "mailer@example.com",
+		FromName: "Mailer",
+	})
+	if err != nil {
+		t.Fatalf("CreateWithSMTP: %v", err)
+	}
+
+	tok := adminToken(t, env, tn.ID, "smtpadmin@example.com", "smtppass1")
+
+	resp := doExport(t, env, tn.ID, tok)
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 200, got %d: %s", resp.StatusCode, raw)
+	}
+
+	rawBody, _ := io.ReadAll(resp.Body)
+	body := string(rawBody)
+
+	if strings.Contains(body, smtpPassword) {
+		t.Error("export response contains the SMTP password — must be masked")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// 5. /clients endpoint requires auth
+// ---------------------------------------------------------------------------
+
+func TestCreateClient_RequiresAuth(t *testing.T) {
+	env := newExportEnv(t)
+	// Seed a tenant so the middleware can resolve a slug, but we call /clients
+	// without any Authorization header.
+	tn, err := env.tenantStore.Create("auth-clients", "Auth Clients")
+	if err != nil {
+		t.Fatalf("create tenant: %v", err)
+	}
+
+	// Wire a mux with the /clients route using a fresh IAM handler.
+	iamHandler := iam.NewHandler(env.iamStore, env.registry, "http://test-issuer")
+	mux := http.NewServeMux()
+	mux.HandleFunc("/clients", iamHandler.CreateClient)
+	srv := httptest.NewServer(tenant.Middleware(env.tenantStore, tn.ID)(mux))
+	t.Cleanup(srv.Close)
+
+	payload := `{"name":"MyApp","redirect_uris":["https://app.com/cb"]}`
+	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/clients", strings.NewReader(payload))
+	req.Header.Set("Content-Type", "application/json")
+	// Intentionally no Authorization header.
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("POST /clients: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusUnauthorized {
+		raw, _ := io.ReadAll(resp.Body)
+		t.Errorf("expected 401 without auth, got %d: %s", resp.StatusCode, raw)
 	}
 }

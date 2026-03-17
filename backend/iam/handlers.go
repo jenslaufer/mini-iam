@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"html"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -12,10 +13,17 @@ import (
 	"github.com/jenslaufer/launch-kit/tenantctx"
 )
 
+// RegistrationPolicy controls whether public registration is allowed per tenant.
+type RegistrationPolicy interface {
+	IsRegistrationEnabled(tenantID string) bool
+}
+
 type Handler struct {
-	Store    *Store
-	Registry *TokenRegistry
-	Issuer   string
+	Store            *Store
+	Registry         *TokenRegistry
+	Issuer           string
+	PlatformTenantID string
+	Registration     RegistrationPolicy // nil = registration always allowed
 }
 
 func NewHandler(store *Store, registry *TokenRegistry, issuer string) *Handler {
@@ -52,6 +60,13 @@ func WriteError(w http.ResponseWriter, status int, err, desc string) {
 	WriteJSON(w, status, ErrorResponse{Error: err, ErrorDescription: desc})
 }
 
+// WriteTokenJSON writes a token response with cache headers per RFC 6749 §5.1.
+func WriteTokenJSON(w http.ResponseWriter, status int, v interface{}) {
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Pragma", "no-cache")
+	WriteJSON(w, status, v)
+}
+
 var EmailRegex = regexp.MustCompile(`^[^\s@]+@[^\s@]+\.[^\s@]+$`)
 
 // --- Handlers ---
@@ -66,6 +81,15 @@ func (h *Handler) Register(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Check if registration is enabled for this tenant
+	if h.Registration != nil {
+		tenantID := tenantctx.FromContext(r.Context())
+		if !h.Registration.IsRegistrationEnabled(tenantID) {
+			WriteError(w, http.StatusForbidden, "registration_disabled", "public registration is disabled for this tenant")
+			return
+		}
+	}
+
 	var req struct {
 		Email    string `json:"email"`
 		Password string `json:"password"`
@@ -76,12 +100,12 @@ func (h *Handler) Register(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !EmailRegex.MatchString(req.Email) {
+	if len(req.Email) > 254 || !EmailRegex.MatchString(req.Email) {
 		WriteError(w, http.StatusBadRequest, "invalid_request", "invalid email format")
 		return
 	}
-	if req.Password == "" {
-		WriteError(w, http.StatusBadRequest, "invalid_request", "password required")
+	if len(req.Password) < 8 {
+		WriteError(w, http.StatusBadRequest, "invalid_request", "password must be at least 8 characters")
 		return
 	}
 	if req.Name == "" {
@@ -150,7 +174,7 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	WriteJSON(w, http.StatusOK, TokenResponse{
+	WriteTokenJSON(w, http.StatusOK, TokenResponse{
 		AccessToken:  accessToken,
 		TokenType:    "Bearer",
 		ExpiresIn:    3600,
@@ -186,28 +210,20 @@ button:hover{background:#1d4ed8}
 <label>Password</label><input type="password" name="password" required>
 <button type="submit">Sign In</button>
 </form></body></html>`,
-		escapeHTML(q.Get("client_id")),
-		escapeHTML(q.Get("redirect_uri")),
-		escapeHTML(q.Get("state")),
-		escapeHTML(q.Get("scope")),
-		escapeHTML(q.Get("nonce")),
-		escapeHTML(q.Get("code_challenge")),
-		escapeHTML(q.Get("code_challenge_method")),
-		escapeHTML(q.Get("response_type")),
+		html.EscapeString(q.Get("client_id")),
+		html.EscapeString(q.Get("redirect_uri")),
+		html.EscapeString(q.Get("state")),
+		html.EscapeString(q.Get("scope")),
+		html.EscapeString(q.Get("nonce")),
+		html.EscapeString(q.Get("code_challenge")),
+		html.EscapeString(q.Get("code_challenge_method")),
+		html.EscapeString(q.Get("response_type")),
 	)
 
 	w.Header().Set("Content-Type", "text/html")
 	w.Write([]byte(html))
 }
 
-func escapeHTML(s string) string {
-	s = strings.ReplaceAll(s, "&", "&amp;")
-	s = strings.ReplaceAll(s, "<", "&lt;")
-	s = strings.ReplaceAll(s, ">", "&gt;")
-	s = strings.ReplaceAll(s, "\"", "&quot;")
-	s = strings.ReplaceAll(s, "'", "&#39;")
-	return s
-}
 
 func (h *Handler) AuthorizePOST(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseForm(); err != nil {
@@ -349,6 +365,9 @@ func (h *Handler) tokenAuthorizationCode(w http.ResponseWriter, r *http.Request)
 			WriteError(w, http.StatusUnauthorized, "invalid_client", "invalid client credentials")
 			return
 		}
+	} else {
+		WriteError(w, http.StatusBadRequest, "invalid_grant", "code_challenge or client_secret required")
+		return
 	}
 
 	user, err := store.GetUserByID(ac.UserID)
@@ -382,7 +401,7 @@ func (h *Handler) tokenAuthorizationCode(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	WriteJSON(w, http.StatusOK, TokenResponse{
+	WriteTokenJSON(w, http.StatusOK, TokenResponse{
 		AccessToken:  accessToken,
 		TokenType:    "Bearer",
 		ExpiresIn:    3600,
@@ -444,7 +463,7 @@ func (h *Handler) tokenRefreshToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	WriteJSON(w, http.StatusOK, TokenResponse{
+	WriteTokenJSON(w, http.StatusOK, TokenResponse{
 		AccessToken:  accessToken,
 		TokenType:    "Bearer",
 		ExpiresIn:    3600,
@@ -558,6 +577,9 @@ func (h *Handler) CreateClient(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, http.StatusMethodNotAllowed, "invalid_request", "method not allowed")
 		return
 	}
+	if _, ok := h.requireAdmin(w, r); !ok {
+		return
+	}
 
 	var req struct {
 		Name         string   `json:"name"`
@@ -596,8 +618,9 @@ func (h *Handler) CreateClient(w http.ResponseWriter, r *http.Request) {
 
 // CheckAdmin validates the Bearer token and checks the admin role.
 // Returns the admin User and true on success, writes an error and returns false on failure.
+// Platform admins (token tid == platformTenantID) may access any tenant's admin endpoints.
 // Used by both IAM and marketing handlers.
-func CheckAdmin(registry *TokenRegistry, store *Store, w http.ResponseWriter, r *http.Request) (*User, bool) {
+func CheckAdmin(registry *TokenRegistry, store *Store, platformTenantID string, w http.ResponseWriter, r *http.Request) (*User, bool) {
 	auth := r.Header.Get("Authorization")
 	if !strings.HasPrefix(auth, "Bearer ") {
 		WriteError(w, http.StatusUnauthorized, "invalid_token", "Bearer token required")
@@ -605,7 +628,14 @@ func CheckAdmin(registry *TokenRegistry, store *Store, w http.ResponseWriter, r 
 	}
 	tokenStr := strings.TrimPrefix(auth, "Bearer ")
 
-	ts, err := registry.ForTenant(tenantctx.FromContext(r.Context()), tenantctx.SlugFromContext(r.Context()))
+	// Extract tid to find the correct signing key (platform admin's token
+	// is signed with the platform tenant's key, not the request tenant's key).
+	tokenTenantID, _ := extractClaim(tokenStr, "tid").(string)
+	if tokenTenantID == "" {
+		tokenTenantID = tenantctx.FromContext(r.Context())
+	}
+
+	ts, err := registry.ForTenant(tokenTenantID, "")
 	if err != nil {
 		WriteError(w, http.StatusInternalServerError, "server_error", "failed to load tenant keys")
 		return nil, false
@@ -622,16 +652,16 @@ func CheckAdmin(registry *TokenRegistry, store *Store, w http.ResponseWriter, r 
 		return nil, false
 	}
 
-	// Validate tenant matches
-	tokenTenantID, _ := claims["tid"].(string)
+	// Validate tenant: token must belong to request tenant OR be a platform admin
 	requestTenantID := tenantctx.FromContext(r.Context())
-	if tokenTenantID != requestTenantID {
+	isPlatformAdmin := platformTenantID != "" && tokenTenantID == platformTenantID
+	if tokenTenantID != requestTenantID && !isPlatformAdmin {
 		WriteError(w, http.StatusForbidden, "invalid_token", "token tenant mismatch")
 		return nil, false
 	}
 
 	sub, _ := claims["sub"].(string)
-	scopedStore := store.ForTenant(requestTenantID)
+	scopedStore := store.ForTenant(tokenTenantID)
 	user, err := scopedStore.GetUserByID(sub)
 	if err != nil {
 		WriteError(w, http.StatusUnauthorized, "invalid_token", "user not found")
@@ -640,10 +670,10 @@ func CheckAdmin(registry *TokenRegistry, store *Store, w http.ResponseWriter, r 
 	return user, true
 }
 
-// CheckAdminCrossTenant validates the Bearer token as admin without requiring
-// the token's tenant to match the request's tenant context. Used for global
-// admin endpoints like tenant import where the caller is an admin of any tenant.
-func CheckAdminCrossTenant(registry *TokenRegistry, store *Store, w http.ResponseWriter, r *http.Request) (*User, bool) {
+// CheckAdminCrossTenant validates the Bearer token as a platform admin.
+// The token's tenant must match platformTenantID (the default/platform tenant).
+// Used for global admin endpoints like tenant management and import.
+func CheckAdminCrossTenant(registry *TokenRegistry, store *Store, platformTenantID string, w http.ResponseWriter, r *http.Request) (*User, bool) {
 	auth := r.Header.Get("Authorization")
 	if !strings.HasPrefix(auth, "Bearer ") {
 		WriteError(w, http.StatusUnauthorized, "invalid_token", "Bearer token required")
@@ -676,6 +706,11 @@ func CheckAdminCrossTenant(registry *TokenRegistry, store *Store, w http.Respons
 		return nil, false
 	}
 
+	if platformTenantID != "" && tid != platformTenantID {
+		WriteError(w, http.StatusForbidden, "insufficient_scope", "platform admin required")
+		return nil, false
+	}
+
 	sub, _ := claims["sub"].(string)
 	scopedStore := store.ForTenant(tid)
 	user, err := scopedStore.GetUserByID(sub)
@@ -704,7 +739,7 @@ func extractClaim(tokenStr, claimName string) interface{} {
 }
 
 func (h *Handler) requireAdmin(w http.ResponseWriter, r *http.Request) (*User, bool) {
-	return CheckAdmin(h.Registry, h.Store, w, r)
+	return CheckAdmin(h.Registry, h.Store, h.PlatformTenantID, w, r)
 }
 
 func (h *Handler) AdminListUsers(w http.ResponseWriter, r *http.Request) {
@@ -881,7 +916,7 @@ button:hover{background:#1d4ed8}
 <label>Password</label><input type="password" name="password" required minlength="8" autofocus>
 <label>Confirm Password</label><input type="password" name="confirm" required minlength="8">
 <button type="submit">Activate</button>
-</form></body></html>`, escapeHTML(email))
+</form></body></html>`, html.EscapeString(email))
 
 	case http.MethodPost:
 		var password string

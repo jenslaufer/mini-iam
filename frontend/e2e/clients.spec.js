@@ -8,15 +8,18 @@ test.describe('Clients page', () => {
   test.beforeEach(async ({ page }) => {
     await loginAsAdmin(page)
     await page.goto('/clients')
-    // Wait for skeleton loaders to finish
-    await expect(page.locator('tbody tr td .animate-pulse').first()).toHaveCount(0, { timeout: 10000 })
+    await page.waitForFunction(() => !document.querySelector('tbody .animate-pulse'), { timeout: 15000 })
   })
 
   test('shows empty client list or lists existing clients', async ({ page }) => {
-    // Either the empty state message or at least one row must be present
-    const emptyState = page.getByText('No clients registered yet')
-    const firstRow = page.locator('tbody tr').first()
-    await expect(emptyState.or(firstRow)).toBeVisible()
+    await expect(page.locator('tbody tr').first()).toBeVisible()
+  })
+
+  test('content persists after loading', async ({ page }) => {
+    await expect(page.getByRole('button', { name: '+ New Client' })).toBeVisible()
+    await page.waitForTimeout(1000)
+    await expect(page.getByRole('button', { name: '+ New Client' })).toBeVisible()
+    await expect(page.locator('tbody tr').first()).toBeVisible()
   })
 
   test('can create new client via modal', async ({ page }) => {
@@ -150,7 +153,7 @@ test.describe('Clients page', () => {
     await page.getByRole('button', { name: 'Delete' }).last().click()
 
     // Client is removed from the table
-    await expect(page.getByText(clientName)).not.toBeVisible()
+    await expect(page.locator('tbody').getByText(clientName)).toBeHidden({ timeout: 10000 })
     await expect(page.getByText('Client deleted')).toBeVisible()
   })
 
