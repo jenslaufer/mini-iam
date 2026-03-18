@@ -150,6 +150,7 @@ To switch to Keycloak, Auth0, or any OIDC provider — change these three vars. 
 | GET | `/.well-known/openid-configuration` | — | OIDC Discovery |
 | GET | `/jwks` | — | JSON Web Key Set |
 | POST | `/revoke` | — | Token revocation (RFC 7009) |
+| POST | `/password` | Bearer | Change password |
 | POST | `/clients` | Admin | Register OAuth2 client |
 | GET/POST | `/activate/{token}` | — | Account activation (invite flow) |
 
@@ -183,6 +184,7 @@ To switch to Keycloak, Auth0, or any OIDC provider — change these three vars. 
 |---|---|---|
 | GET | `/admin/tenants` | List tenants |
 | POST | `/admin/tenants/import` | Import tenant from JSON |
+| POST | `/admin/tenants/import-batch` | Import multiple tenants (returns per-tenant results) |
 | GET | `/admin/tenants/{id}/export` | Export tenant config |
 | DELETE | `/admin/tenants/{id}` | Delete tenant (cascades) |
 
@@ -219,11 +221,11 @@ backend/
 frontend/
   src/
     views/                 Login, Dashboard, Users, Clients, Contacts,
-                           Segments, Campaigns, Tenants
+                           Segments, Campaigns, Tenants, Settings
     components/            Layout, sidebar, modals, inputs, toasts
-    api/                   Axios client with tenant header interceptor
+    api/                   Axios client with tenant header interceptor, account API
     stores/                Pinia: auth (JWT, login), tenant (selector, platform admin)
-  e2e/                     58 Playwright E2E tests
+  e2e/                     66 Playwright E2E tests
   nginx.conf               Reverse proxy (/auth → backend)
 
 example/
