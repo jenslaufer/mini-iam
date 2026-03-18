@@ -191,6 +191,22 @@ func (s *Store) UpdateUser(id string, name, role string) (*User, error) {
 	return user, nil
 }
 
+func (s *Store) UpdateUserPassword(id, newPassword string) error {
+	hash, err := bcrypt.GenerateFromPassword([]byte(newPassword), bcrypt.DefaultCost)
+	if err != nil {
+		return err
+	}
+	result, err := s.db.Exec("UPDATE users SET password_hash = ? WHERE id = ? AND tenant_id = ?", string(hash), id, s.tenantID)
+	if err != nil {
+		return err
+	}
+	rows, _ := result.RowsAffected()
+	if rows == 0 {
+		return fmt.Errorf("user not found")
+	}
+	return nil
+}
+
 func (s *Store) DeleteUser(id string) error {
 	result, err := s.db.Exec("DELETE FROM users WHERE id = ? AND tenant_id = ?", id, s.tenantID)
 	if err != nil {

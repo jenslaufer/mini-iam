@@ -61,6 +61,7 @@ func newHandlerEnv(t *testing.T) *testEnv {
 	mux.HandleFunc("/admin/clients", h.AdminListClients)
 	mux.HandleFunc("/admin/clients/", h.AdminDeleteClient)
 	mux.HandleFunc("/activate/", h.Activate)
+	mux.HandleFunc("/password", h.ChangePassword)
 
 	srv := httptest.NewServer(mux)
 	t.Cleanup(func() { srv.Close() })
@@ -961,5 +962,102 @@ func TestRegisterDisabledByPolicy(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusForbidden {
 		t.Errorf("registration disabled: status = %d, want 403", resp.StatusCode)
+	}
+}
+
+// --- ChangePassword ---
+
+func userToken(t *testing.T, env *testEnv, email, password string) string {
+	t.Helper()
+	postJSON(t, env, "/register", fmt.Sprintf(`{"email":"%s","password":"%s","name":"User"}`, email, password)).Body.Close()
+	resp := postJSON(t, env, "/login", fmt.Sprintf(`{"email":"%s","password":"%s"}`, email, password))
+	tok := readJSON(t, resp)["access_token"].(string)
+	return tok
+}
+
+func TestChangePasswordSuccess(t *testing.T) {
+	env := newHandlerEnv(t)
+	tok := userToken(t, env, "chpw@example.com", "oldpass12")
+
+	resp := doReq(t, env, "POST", "/password", tok,
+		`{"current_password":"oldpass12","new_password":"newpass12","confirm_password":"newpass12"}`)
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d, body = %s", resp.StatusCode, b)
+	}
+	m := readJSON(t, resp)
+	if m["status"] != "password_changed" {
+		t.Errorf("status = %v", m["status"])
+	}
+
+	// Old password should fail login
+	resp = postJSON(t, env, "/login", `{"email":"chpw@example.com","password":"oldpass12"}`)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("old password login: status = %d, want 401", resp.StatusCode)
+	}
+
+	// New password should work
+	resp = postJSON(t, env, "/login", `{"email":"chpw@example.com","password":"newpass12"}`)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("new password login: status = %d, want 200", resp.StatusCode)
+	}
+}
+
+func TestChangePasswordWrongCurrent(t *testing.T) {
+	env := newHandlerEnv(t)
+	tok := userToken(t, env, "wrong@example.com", "correct1")
+
+	resp := doReq(t, env, "POST", "/password", tok,
+		`{"current_password":"incorrect","new_password":"newpass12","confirm_password":"newpass12"}`)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("wrong current password: status = %d, want 401", resp.StatusCode)
+	}
+}
+
+func TestChangePasswordMismatch(t *testing.T) {
+	env := newHandlerEnv(t)
+	tok := userToken(t, env, "mismatch@example.com", "oldpass12")
+
+	resp := doReq(t, env, "POST", "/password", tok,
+		`{"current_password":"oldpass12","new_password":"newpass12","confirm_password":"different"}`)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("mismatch: status = %d, want 400", resp.StatusCode)
+	}
+}
+
+func TestChangePasswordTooShort(t *testing.T) {
+	env := newHandlerEnv(t)
+	tok := userToken(t, env, "short@example.com", "oldpass12")
+
+	resp := doReq(t, env, "POST", "/password", tok,
+		`{"current_password":"oldpass12","new_password":"short","confirm_password":"short"}`)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("too short: status = %d, want 400", resp.StatusCode)
+	}
+}
+
+func TestChangePasswordNoAuth(t *testing.T) {
+	env := newHandlerEnv(t)
+
+	resp := doReq(t, env, "POST", "/password", "",
+		`{"current_password":"x","new_password":"newpass12","confirm_password":"newpass12"}`)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("no auth: status = %d, want 401", resp.StatusCode)
+	}
+}
+
+func TestChangePasswordMethodNotAllowed(t *testing.T) {
+	env := newHandlerEnv(t)
+
+	resp := doReq(t, env, "GET", "/password", "", "")
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusMethodNotAllowed {
+		t.Errorf("GET: status = %d, want 405", resp.StatusCode)
 	}
 }
