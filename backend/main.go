@@ -216,6 +216,7 @@ func main() {
 		}
 	})
 	mux.HandleFunc("/admin/tenants/import", exportImportHandler.Import)
+	mux.HandleFunc("/admin/tenants/import-batch", exportImportHandler.ImportBatch)
 	mux.HandleFunc("/admin/tenants/", exportImportHandler.ExportOrDelete)
 
 	// Wrap with tenant middleware (path prefix + X-Tenant header), then CORS

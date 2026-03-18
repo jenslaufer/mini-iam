@@ -115,6 +115,7 @@ func newExportEnv(t *testing.T) *exportEnv {
 
 	// Tenant management routes
 	mux.HandleFunc("/admin/tenants/import", exportHandler.Import)
+	mux.HandleFunc("/admin/tenants/import-batch", exportHandler.ImportBatch)
 	mux.HandleFunc("/admin/tenants/", exportHandler.ExportOrDelete)
 
 	handler := tenant.Middleware(tenantStore, "")(mux)
@@ -1349,6 +1350,282 @@ func TestCreateClient_RequiresAuth(t *testing.T) {
 	if err != nil {
 		t.Fatalf("POST /clients: %v", err)
 	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusUnauthorized {
+		raw, _ := io.ReadAll(resp.Body)
+		t.Errorf("expected 401 without auth, got %d: %s", resp.StatusCode, raw)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Batch import types and helpers
+// ---------------------------------------------------------------------------
+
+// BatchImportResult is one entry in the array returned by POST /admin/tenants/import-batch.
+type BatchImportResult struct {
+	TenantID string          `json:"tenant_id,omitempty"`
+	Slug     string          `json:"slug"`
+	Clients  []ClientImported `json:"clients,omitempty"`
+	Skipped  bool            `json:"skipped,omitempty"`
+	Error    string          `json:"error,omitempty"`
+}
+
+// doBatchImport calls POST /admin/tenants/import-batch with a Bearer token.
+func doBatchImport(t *testing.T, env *exportEnv, payload []TenantExport, token string) *http.Response {
+	t.Helper()
+	b, _ := json.Marshal(payload)
+	req, _ := http.NewRequest(http.MethodPost,
+		env.srv.URL+"/admin/tenants/import-batch",
+		bytes.NewReader(b))
+	req.Header.Set("Content-Type", "application/json")
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("batch import request: %v", err)
+	}
+	return resp
+}
+
+// ---------------------------------------------------------------------------
+// Batch import tests
+// ---------------------------------------------------------------------------
+
+func TestBatchImport_EmptyArray(t *testing.T) {
+	env := newExportEnv(t)
+	tok := seedGlobalAdmin(t, env)
+
+	resp := doBatchImport(t, env, []TenantExport{}, tok)
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 200, got %d: %s", resp.StatusCode, raw)
+	}
+
+	var results []BatchImportResult
+	if err := json.NewDecoder(resp.Body).Decode(&results); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(results) != 0 {
+		t.Errorf("expected empty array, got %d entries", len(results))
+	}
+}
+
+func TestBatchImport_MultipleValid(t *testing.T) {
+	env := newExportEnv(t)
+	tok := seedGlobalAdmin(t, env)
+
+	payload := []TenantExport{
+		{Slug: "batch-alpha", Name: "Alpha"},
+		{Slug: "batch-beta", Name: "Beta"},
+	}
+	resp := doBatchImport(t, env, payload, tok)
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 200, got %d: %s", resp.StatusCode, raw)
+	}
+
+	var results []BatchImportResult
+	if err := json.NewDecoder(resp.Body).Decode(&results); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("expected 2 results, got %d", len(results))
+	}
+	for _, r := range results {
+		if r.TenantID == "" {
+			t.Errorf("result for %q: tenant_id is empty", r.Slug)
+		}
+		if r.Slug == "" {
+			t.Error("result has empty slug")
+		}
+		if r.Error != "" {
+			t.Errorf("result for %q: unexpected error %q", r.Slug, r.Error)
+		}
+		if r.Skipped {
+			t.Errorf("result for %q: unexpected skipped=true", r.Slug)
+		}
+	}
+}
+
+func TestBatchImport_DuplicateSlugInBatch(t *testing.T) {
+	env := newExportEnv(t)
+	tok := seedGlobalAdmin(t, env)
+
+	const slug = "dup-in-batch"
+	payload := []TenantExport{
+		{Slug: slug, Name: "First"},
+		{Slug: slug, Name: "Second"},
+	}
+	resp := doBatchImport(t, env, payload, tok)
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 200, got %d: %s", resp.StatusCode, raw)
+	}
+
+	var results []BatchImportResult
+	if err := json.NewDecoder(resp.Body).Decode(&results); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("expected 2 results, got %d", len(results))
+	}
+
+	first := results[0]
+	if first.TenantID == "" {
+		t.Errorf("first entry: tenant_id is empty")
+	}
+	if first.Skipped {
+		t.Errorf("first entry: should not be skipped")
+	}
+
+	second := results[1]
+	if !second.Skipped {
+		t.Errorf("second entry (duplicate slug): expected skipped=true")
+	}
+}
+
+func TestBatchImport_AlreadyExistingTenant(t *testing.T) {
+	env := newExportEnv(t)
+	tok := seedGlobalAdmin(t, env)
+
+	const slug = "existing"
+	if _, err := env.tenantStore.Create(slug, "Existing Tenant"); err != nil {
+		t.Fatalf("create tenant: %v", err)
+	}
+
+	payload := []TenantExport{{Slug: slug, Name: "Existing Tenant"}}
+	resp := doBatchImport(t, env, payload, tok)
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 200, got %d: %s", resp.StatusCode, raw)
+	}
+
+	var results []BatchImportResult
+	if err := json.NewDecoder(resp.Body).Decode(&results); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	if !results[0].Skipped {
+		t.Errorf("expected skipped=true for already-existing tenant %q", slug)
+	}
+}
+
+func TestBatchImport_InvalidSlug(t *testing.T) {
+	env := newExportEnv(t)
+	tok := seedGlobalAdmin(t, env)
+
+	payload := []TenantExport{
+		{Slug: "INVALID_SLUG!", Name: "Bad Slug"},
+		{Slug: "valid-one", Name: "Valid One"},
+	}
+	resp := doBatchImport(t, env, payload, tok)
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 200, got %d: %s", resp.StatusCode, raw)
+	}
+
+	var results []BatchImportResult
+	if err := json.NewDecoder(resp.Body).Decode(&results); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("expected 2 results, got %d", len(results))
+	}
+
+	invalid := results[0]
+	if invalid.Error == "" {
+		t.Errorf("first entry (invalid slug): expected error, got none")
+	}
+	if invalid.TenantID != "" {
+		t.Errorf("first entry (invalid slug): tenant_id should be empty, got %q", invalid.TenantID)
+	}
+
+	valid := results[1]
+	if valid.TenantID == "" {
+		t.Errorf("second entry (valid slug): tenant_id is empty")
+	}
+	if valid.Error != "" {
+		t.Errorf("second entry (valid slug): unexpected error %q", valid.Error)
+	}
+}
+
+func TestBatchImport_MixedResults(t *testing.T) {
+	env := newExportEnv(t)
+	tok := seedGlobalAdmin(t, env)
+
+	const existingSlug = "mixed-existing"
+	if _, err := env.tenantStore.Create(existingSlug, "Mixed Existing"); err != nil {
+		t.Fatalf("pre-create tenant: %v", err)
+	}
+
+	payload := []TenantExport{
+		{Slug: "mixed-new", Name: "New One"},
+		{Slug: "INVALID!!!", Name: "Bad One"},
+		{Slug: existingSlug, Name: "Mixed Existing"},
+	}
+	resp := doBatchImport(t, env, payload, tok)
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 200, got %d: %s", resp.StatusCode, raw)
+	}
+
+	var results []BatchImportResult
+	if err := json.NewDecoder(resp.Body).Decode(&results); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(results) != 3 {
+		t.Fatalf("expected 3 results, got %d", len(results))
+	}
+
+	newResult := results[0]
+	if newResult.TenantID == "" {
+		t.Errorf("valid new entry: tenant_id is empty")
+	}
+	if newResult.Error != "" {
+		t.Errorf("valid new entry: unexpected error %q", newResult.Error)
+	}
+	if newResult.Skipped {
+		t.Errorf("valid new entry: unexpected skipped=true")
+	}
+
+	invalidResult := results[1]
+	if invalidResult.Error == "" {
+		t.Errorf("invalid slug entry: expected error, got none")
+	}
+	if invalidResult.TenantID != "" {
+		t.Errorf("invalid slug entry: tenant_id should be empty, got %q", invalidResult.TenantID)
+	}
+
+	existingResult := results[2]
+	if !existingResult.Skipped {
+		t.Errorf("already-existing entry: expected skipped=true")
+	}
+	if existingResult.Error != "" {
+		t.Errorf("already-existing entry: unexpected error %q", existingResult.Error)
+	}
+}
+
+func TestBatchImport_RequiresAuth(t *testing.T) {
+	env := newExportEnv(t)
+
+	payload := []TenantExport{{Slug: "no-auth-tenant", Name: "No Auth"}}
+	resp := doBatchImport(t, env, payload, "")
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusUnauthorized {

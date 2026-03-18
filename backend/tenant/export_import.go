@@ -242,6 +242,58 @@ func (h *ExportImportHandler) Import(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// --- Batch import types ---
+
+type batchImportEntry struct {
+	TenantID string           `json:"tenant_id,omitempty"`
+	Slug     string           `json:"slug"`
+	Clients  []ClientImported `json:"clients,omitempty"`
+	Skipped  bool             `json:"skipped,omitempty"`
+	Error    string           `json:"error,omitempty"`
+}
+
+// ImportBatch handles POST /admin/tenants/import-batch.
+func (h *ExportImportHandler) ImportBatch(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		iam.WriteError(w, http.StatusMethodNotAllowed, "invalid_request", "method not allowed")
+		return
+	}
+
+	if _, ok := iam.CheckAdminCrossTenant(h.registry, h.iamStore, h.PlatformTenantID, w, r); !ok {
+		return
+	}
+
+	var configs []ImportConfig
+	if err := json.NewDecoder(r.Body).Decode(&configs); err != nil {
+		iam.WriteError(w, http.StatusBadRequest, "invalid_request", "invalid JSON body")
+		return
+	}
+
+	results := make([]batchImportEntry, 0, len(configs))
+	for _, cfg := range configs {
+		entry := batchImportEntry{Slug: cfg.Slug}
+
+		result, err := ImportTenantConfig(h.tenantStore, h.iamStore, h.mktStore, cfg)
+		if err != nil {
+			entry.Error = err.Error()
+			results = append(results, entry)
+			continue
+		}
+		if result.Skipped {
+			entry.TenantID = result.TenantID
+			entry.Skipped = true
+			results = append(results, entry)
+			continue
+		}
+
+		entry.TenantID = result.TenantID
+		entry.Clients = result.Clients
+		results = append(results, entry)
+	}
+
+	iam.WriteJSON(w, http.StatusOK, results)
+}
+
 // ExportOrDelete handles /admin/tenants/{id} and /admin/tenants/{id}/export.
 func (h *ExportImportHandler) ExportOrDelete(w http.ResponseWriter, r *http.Request) {
 	path := strings.TrimPrefix(r.URL.Path, "/admin/tenants/")
