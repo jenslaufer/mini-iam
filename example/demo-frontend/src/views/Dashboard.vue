@@ -1,6 +1,12 @@
 <template>
   <div>
-    <h2 class="text-2xl font-bold mb-6">Dashboard</h2>
+    <div class="flex justify-between items-center mb-6">
+      <h2 class="text-2xl font-bold">Dashboard</h2>
+      <div class="flex gap-3 text-sm">
+        <router-link to="/settings" class="text-blue-600 hover:underline">Settings</router-link>
+        <button @click="logout" class="text-gray-500 hover:underline">Logout</button>
+      </div>
+    </div>
 
     <div v-if="dash" class="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-8">
       <div class="bg-white rounded-lg shadow p-5">
@@ -38,7 +44,9 @@
 
 <script setup>
 import { ref, onMounted } from 'vue'
-import { api } from '../stores/auth.js'
+import { api, auth } from '../stores/auth.js'
+
+function logout() { auth.logout() }
 
 const dash = ref(null)
 const notes = ref([])

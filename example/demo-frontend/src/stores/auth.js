@@ -51,7 +51,7 @@ export async function iam(url, options = {}) {
   const res = await fetch(url, { ...options, headers })
   if (!res.ok) {
     const data = await res.json().catch(() => ({}))
-    throw new Error(data.detail || `Auth request failed (${res.status})`)
+    throw new Error(data.error_description || data.detail || data.error || `Auth request failed (${res.status})`)
   }
   return res.json()
 }

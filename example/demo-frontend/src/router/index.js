@@ -11,6 +11,11 @@ const routes = [
     component: () => import('../views/Dashboard.vue'),
     meta: { requiresAuth: true },
   },
+  {
+    path: '/settings',
+    component: () => import('../views/Settings.vue'),
+    meta: { requiresAuth: true },
+  },
 ]
 
 export const router = createRouter({
