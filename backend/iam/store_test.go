@@ -271,6 +271,38 @@ func TestDeleteUserNotFound(t *testing.T) {
 	}
 }
 
+// --- UpdateUserPassword Tests ---
+
+func TestUpdateUserPassword(t *testing.T) {
+	s := newTestStore(t)
+
+	u, _ := s.CreateUser("pw@example.com", "oldpass12", "PW")
+	if err := s.UpdateUserPassword(u.ID, "newpass12"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Old password should fail
+	_, err := s.AuthenticateUser("pw@example.com", "oldpass12")
+	if err == nil {
+		t.Error("old password should no longer work")
+	}
+
+	// New password should succeed
+	_, err = s.AuthenticateUser("pw@example.com", "newpass12")
+	if err != nil {
+		t.Errorf("new password should work: %v", err)
+	}
+}
+
+func TestUpdateUserPasswordNotFound(t *testing.T) {
+	s := newTestStore(t)
+
+	err := s.UpdateUserPassword("nonexistent", "newpass12")
+	if err == nil {
+		t.Error("expected error for nonexistent user")
+	}
+}
+
 // --- Client Tests ---
 
 func TestCreateClient(t *testing.T) {

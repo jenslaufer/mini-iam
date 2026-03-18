@@ -24,7 +24,14 @@ let logoutInProgress = false
 apiClient.interceptors.response.use(
   (res) => res,
   async (err) => {
-    if (err.response?.status === 401 && !logoutInProgress) {
+    const requestPath = typeof err.config?.url === 'string' ? err.config.url : ''
+    const errorCode = err.response?.data?.error
+    const preserveSessionForPasswordCheck =
+      err.response?.status === 401 &&
+      requestPath.endsWith('/password') &&
+      errorCode === 'invalid_grant'
+
+    if (err.response?.status === 401 && !logoutInProgress && !preserveSessionForPasswordCheck) {
       logoutInProgress = true
       const { useAuthStore } = await import('../stores/auth.js')
       const auth = useAuthStore()

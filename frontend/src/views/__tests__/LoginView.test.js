@@ -9,6 +9,8 @@ vi.mock('vue-router', () => ({
   useRouter: () => ({ push: mockPush }),
   useRoute: () => ({}),
   RouterLink: { template: '<a><slot /></a>' },
+  createRouter: () => ({ beforeEach: vi.fn() }),
+  createWebHistory: vi.fn(),
 }))
 
 function mountLogin(loginImpl) {
@@ -48,7 +50,7 @@ describe('LoginView', () => {
     await wrapper.find('form').trigger('submit.prevent')
     await flushPromises()
 
-    expect(auth.login).toHaveBeenCalledWith('admin@example.com', 'secret')
+    expect(auth.login).toHaveBeenCalledWith('admin@example.com', 'secret', '')
   })
 
   it('redirects to /dashboard on successful login', async () => {

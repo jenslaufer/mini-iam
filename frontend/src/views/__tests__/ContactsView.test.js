@@ -26,7 +26,7 @@ vi.mock('vue-router', () => ({
   useRouter: () => ({ push: vi.fn() }),
   useRoute: () => ({}),
   RouterLink: { template: '<a><slot /></a>' },
-  createRouter: vi.fn(),
+  createRouter: () => ({ beforeEach: vi.fn() }),
   createWebHistory: vi.fn(),
 }))
 
