@@ -1041,6 +1041,19 @@ func TestChangePasswordTooShort(t *testing.T) {
 	}
 }
 
+func TestChangePasswordTooLong(t *testing.T) {
+	env := newHandlerEnv(t)
+	tok := userToken(t, env, "toolong@example.com", "oldpass12")
+	tooLong := strings.Repeat("a", 73)
+
+	resp := doReq(t, env, "POST", "/password", tok,
+		fmt.Sprintf(`{"current_password":"oldpass12","new_password":"%s","confirm_password":"%s"}`, tooLong, tooLong))
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("too long: status = %d, want 400", resp.StatusCode)
+	}
+}
+
 func TestChangePasswordNoAuth(t *testing.T) {
 	env := newHandlerEnv(t)
 

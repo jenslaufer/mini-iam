@@ -803,6 +803,10 @@ func (h *Handler) ChangePassword(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, http.StatusBadRequest, "invalid_request", "password must be at least 8 characters")
 		return
 	}
+	if len(req.NewPassword) > 72 {
+		WriteError(w, http.StatusBadRequest, "invalid_request", "password must be at most 72 characters")
+		return
+	}
 
 	store := h.tenantStore(r)
 	if _, err := store.AuthenticateUser(user.Email, req.CurrentPassword); err != nil {

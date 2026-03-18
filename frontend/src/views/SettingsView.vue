@@ -48,7 +48,7 @@ async function submit() {
     <div class="bg-white rounded-xl border border-slate-200 p-6">
       <h2 class="text-lg font-medium text-slate-900 mb-4">Change Password</h2>
 
-      <form class="space-y-4" @submit.prevent="submit">
+      <form class="space-y-4" novalidate @submit.prevent="submit">
         <BaseInput
           label="Current Password"
           type="password"
