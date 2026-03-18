@@ -113,7 +113,7 @@ export async function getUserToken(baseURL, email, password, tenant = '') {
  * @param {string} confirmPassword
  * @returns {Promise<Response>}
  */
-export async function changePasswordApi(baseURL, token, currentPassword, newPassword, confirmPassword = newPassword) {
+export async function changePasswordApi(baseURL, token, currentPassword, newPassword) {
   return fetch(`${baseURL}/auth/password`, {
     method: 'POST',
     headers: {
@@ -123,7 +123,6 @@ export async function changePasswordApi(baseURL, token, currentPassword, newPass
     body: JSON.stringify({
       current_password: currentPassword,
       new_password: newPassword,
-      confirm_password: confirmPassword,
     }),
   })
 }

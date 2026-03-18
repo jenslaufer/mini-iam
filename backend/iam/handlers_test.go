@@ -980,7 +980,7 @@ func TestChangePasswordSuccess(t *testing.T) {
 	tok := userToken(t, env, "chpw@example.com", "oldpass12")
 
 	resp := doReq(t, env, "POST", "/password", tok,
-		`{"current_password":"oldpass12","new_password":"newpass12","confirm_password":"newpass12"}`)
+		`{"current_password":"oldpass12","new_password":"newpass12"}`)
 	if resp.StatusCode != http.StatusOK {
 		b, _ := io.ReadAll(resp.Body)
 		t.Fatalf("status = %d, body = %s", resp.StatusCode, b)
@@ -1010,22 +1010,10 @@ func TestChangePasswordWrongCurrent(t *testing.T) {
 	tok := userToken(t, env, "wrong@example.com", "correct1")
 
 	resp := doReq(t, env, "POST", "/password", tok,
-		`{"current_password":"incorrect","new_password":"newpass12","confirm_password":"newpass12"}`)
+		`{"current_password":"incorrect","new_password":"newpass12"}`)
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Errorf("wrong current password: status = %d, want 401", resp.StatusCode)
-	}
-}
-
-func TestChangePasswordMismatch(t *testing.T) {
-	env := newHandlerEnv(t)
-	tok := userToken(t, env, "mismatch@example.com", "oldpass12")
-
-	resp := doReq(t, env, "POST", "/password", tok,
-		`{"current_password":"oldpass12","new_password":"newpass12","confirm_password":"different"}`)
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusBadRequest {
-		t.Errorf("mismatch: status = %d, want 400", resp.StatusCode)
 	}
 }
 
@@ -1034,7 +1022,7 @@ func TestChangePasswordTooShort(t *testing.T) {
 	tok := userToken(t, env, "short@example.com", "oldpass12")
 
 	resp := doReq(t, env, "POST", "/password", tok,
-		`{"current_password":"oldpass12","new_password":"short","confirm_password":"short"}`)
+		`{"current_password":"oldpass12","new_password":"short"}`)
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Errorf("too short: status = %d, want 400", resp.StatusCode)
@@ -1047,7 +1035,7 @@ func TestChangePasswordTooLong(t *testing.T) {
 	tooLong := strings.Repeat("a", 73)
 
 	resp := doReq(t, env, "POST", "/password", tok,
-		fmt.Sprintf(`{"current_password":"oldpass12","new_password":"%s","confirm_password":"%s"}`, tooLong, tooLong))
+		fmt.Sprintf(`{"current_password":"oldpass12","new_password":"%s"}`, tooLong))
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Errorf("too long: status = %d, want 400", resp.StatusCode)
@@ -1058,7 +1046,7 @@ func TestChangePasswordNoAuth(t *testing.T) {
 	env := newHandlerEnv(t)
 
 	resp := doReq(t, env, "POST", "/password", "",
-		`{"current_password":"x","new_password":"newpass12","confirm_password":"newpass12"}`)
+		`{"current_password":"x","new_password":"newpass12"}`)
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Errorf("no auth: status = %d, want 401", resp.StatusCode)

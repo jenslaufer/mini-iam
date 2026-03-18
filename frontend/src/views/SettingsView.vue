@@ -27,7 +27,7 @@ async function submit() {
   loading.value = true
   errors.value = {}
   try {
-    await changePassword(currentPassword.value, newPassword.value, confirmPassword.value)
+    await changePassword(currentPassword.value, newPassword.value)
     toast.add('success', 'Password changed successfully')
     currentPassword.value = ''
     newPassword.value = ''

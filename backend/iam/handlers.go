@@ -788,17 +788,12 @@ func (h *Handler) ChangePassword(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		CurrentPassword string `json:"current_password"`
 		NewPassword     string `json:"new_password"`
-		ConfirmPassword string `json:"confirm_password"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		WriteError(w, http.StatusBadRequest, "invalid_request", "invalid JSON body")
 		return
 	}
 
-	if req.NewPassword != req.ConfirmPassword {
-		WriteError(w, http.StatusBadRequest, "invalid_request", "passwords do not match")
-		return
-	}
 	if len(req.NewPassword) < 8 {
 		WriteError(w, http.StatusBadRequest, "invalid_request", "password must be at least 8 characters")
 		return
