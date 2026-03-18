@@ -1048,6 +1048,275 @@ func TestSlugValidation_AcceptsValid(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// Users field in import/export
+// ---------------------------------------------------------------------------
+
+// UserExport is the expected shape of each entry in the export "users" array.
+type UserExport struct {
+	Email string `json:"email"`
+	Name  string `json:"name"`
+	Role  string `json:"role"`
+}
+
+// doImportRaw sends a raw map payload to POST /admin/tenants/import.
+func doImportRaw(t *testing.T, env *exportEnv, payload map[string]interface{}, token string) *http.Response {
+	t.Helper()
+	b, _ := json.Marshal(payload)
+	req, _ := http.NewRequest(http.MethodPost,
+		env.srv.URL+"/admin/tenants/import",
+		bytes.NewReader(b))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("import request: %v", err)
+	}
+	return resp
+}
+
+func TestImport_UsersArray_CreatesAdminAndMember(t *testing.T) {
+	env := newExportEnv(t)
+	tok := seedGlobalAdmin(t, env)
+
+	payload := map[string]interface{}{
+		"slug": "users-array-import",
+		"name": "Users Array Import",
+		"users": []map[string]interface{}{
+			{"email": "boss@example.com", "password": "bosspass1", "name": "Boss", "role": "admin"},
+			{"email": "member@example.com", "password": "memberpass1", "name": "Member", "role": "member"},
+		},
+	}
+	resp := doImportRaw(t, env, payload, tok)
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusCreated {
+		raw, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 201, got %d: %s", resp.StatusCode, raw)
+	}
+
+	var result ImportResponse
+	json.NewDecoder(resp.Body).Decode(&result)
+
+	iamScoped := env.iamStore.ForTenant(result.TenantID)
+
+	admin, err := iamScoped.AuthenticateUser("boss@example.com", "bosspass1")
+	if err != nil {
+		t.Fatalf("admin cannot authenticate after import: %v", err)
+	}
+	if admin.Role != "admin" {
+		t.Errorf("boss role = %q, want admin", admin.Role)
+	}
+
+	member, err := iamScoped.AuthenticateUser("member@example.com", "memberpass1")
+	if err != nil {
+		t.Fatalf("member cannot authenticate after import: %v", err)
+	}
+	if member.Role != "member" {
+		t.Errorf("member role = %q, want member", member.Role)
+	}
+}
+
+func TestImport_AdminFieldOnly_BackwardCompat(t *testing.T) {
+	env := newExportEnv(t)
+	tok := seedGlobalAdmin(t, env)
+
+	payload := TenantExport{
+		Slug:  "admin-only-compat",
+		Name:  "Admin Only Compat",
+		Admin: &AdminExport{Email: "legacy@example.com", Password: "legacypass1"},
+	}
+	resp := doImport(t, env, payload, tok)
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusCreated {
+		raw, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 201, got %d: %s", resp.StatusCode, raw)
+	}
+
+	var result ImportResponse
+	json.NewDecoder(resp.Body).Decode(&result)
+
+	iamScoped := env.iamStore.ForTenant(result.TenantID)
+
+	user, err := iamScoped.AuthenticateUser("legacy@example.com", "legacypass1")
+	if err != nil {
+		t.Fatalf("admin cannot authenticate after import: %v", err)
+	}
+	if user.Role != "admin" {
+		t.Errorf("admin role = %q, want admin", user.Role)
+	}
+}
+
+func TestImport_AdminAndUsers_MergedNoDuplicate(t *testing.T) {
+	env := newExportEnv(t)
+	tok := seedGlobalAdmin(t, env)
+
+	// admin field and users array both reference the same email; admin wins.
+	payload := map[string]interface{}{
+		"slug": "merged-no-dupe",
+		"name": "Merged No Duplicate",
+		"admin": map[string]interface{}{
+			"email":    "boss@test.com",
+			"password": "bosspass1",
+		},
+		"users": []map[string]interface{}{
+			{"email": "boss@test.com", "password": "bosspass1", "name": "Boss", "role": "member"},
+			{"email": "other@test.com", "password": "otherpass1", "name": "Other", "role": "member"},
+		},
+	}
+	resp := doImportRaw(t, env, payload, tok)
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusCreated {
+		raw, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 201, got %d: %s", resp.StatusCode, raw)
+	}
+
+	var result ImportResponse
+	json.NewDecoder(resp.Body).Decode(&result)
+
+	iamScoped := env.iamStore.ForTenant(result.TenantID)
+
+	// admin field must win: role should be admin, not member.
+	boss, err := iamScoped.AuthenticateUser("boss@test.com", "bosspass1")
+	if err != nil {
+		t.Fatalf("boss cannot authenticate: %v", err)
+	}
+	if boss.Role != "admin" {
+		t.Errorf("boss role = %q, want admin (admin field must win over users array)", boss.Role)
+	}
+
+	// No duplicate: exactly 2 users total.
+	users, err := iamScoped.ListUsers()
+	if err != nil {
+		t.Fatalf("ListUsers: %v", err)
+	}
+	if len(users) != 2 {
+		t.Errorf("user count = %d, want 2 (no duplicate for merged email)", len(users))
+	}
+}
+
+func TestExport_IncludesUsersWithRoles(t *testing.T) {
+	env := newExportEnv(t)
+	tn, err := env.tenantStore.Create("export-users-roles", "Export Users Roles")
+	if err != nil {
+		t.Fatalf("create tenant: %v", err)
+	}
+
+	iamScoped := env.iamStore.ForTenant(tn.ID)
+
+	if err := iamScoped.SeedAdmin("admin@export.com", "adminpass1", "Admin User"); err != nil {
+		t.Fatalf("SeedAdmin: %v", err)
+	}
+	if _, err := iamScoped.CreateUser("member@export.com", "memberpass1", "Member User"); err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+
+	tok := adminToken(t, env, tn.ID, "admin@export.com", "adminpass1")
+
+	resp := doExport(t, env, tn.ID, tok)
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 200, got %d: %s", resp.StatusCode, raw)
+	}
+
+	rawBody, _ := io.ReadAll(resp.Body)
+
+	// Parse as raw map to check users array presence and absence of password.
+	var raw map[string]interface{}
+	if err := json.Unmarshal(rawBody, &raw); err != nil {
+		t.Fatalf("decode export JSON: %v", err)
+	}
+
+	usersRaw, ok := raw["users"]
+	if !ok {
+		t.Fatal("export JSON has no 'users' field")
+	}
+	usersSlice, ok := usersRaw.([]interface{})
+	if !ok {
+		t.Fatalf("export 'users' is not an array, got %T", usersRaw)
+	}
+	if len(usersSlice) < 2 {
+		t.Fatalf("expected at least 2 users in export, got %d", len(usersSlice))
+	}
+
+	emails := map[string]bool{}
+	for _, u := range usersSlice {
+		entry, ok := u.(map[string]interface{})
+		if !ok {
+			t.Fatalf("user entry is not an object: %T", u)
+		}
+		email, _ := entry["email"].(string)
+		if email == "" {
+			t.Error("user entry missing 'email'")
+		}
+		emails[email] = true
+		if _, hasName := entry["name"]; !hasName {
+			t.Errorf("user %q missing 'name' field", email)
+		}
+		if _, hasRole := entry["role"]; !hasRole {
+			t.Errorf("user %q missing 'role' field", email)
+		}
+		if _, hasPw := entry["password"]; hasPw {
+			t.Errorf("user %q has 'password' in export — must not export passwords", email)
+		}
+		if _, hasPwHash := entry["password_hash"]; hasPwHash {
+			t.Errorf("user %q has 'password_hash' in export — must not export password hashes", email)
+		}
+	}
+
+	if !emails["admin@export.com"] {
+		t.Error("admin@export.com not found in exported users")
+	}
+	if !emails["member@export.com"] {
+		t.Error("member@export.com not found in exported users")
+	}
+}
+
+func TestImport_DuplicateEmailInUsers_ReturnsError(t *testing.T) {
+	env := newExportEnv(t)
+	tok := seedGlobalAdmin(t, env)
+
+	payload := map[string]interface{}{
+		"slug": "dupe-email-users",
+		"name": "Duplicate Email Users",
+		"users": []map[string]interface{}{
+			{"email": "dup@example.com", "password": "pass1", "name": "First", "role": "admin"},
+			{"email": "dup@example.com", "password": "pass2", "name": "Second", "role": "member"},
+		},
+	}
+	resp := doImportRaw(t, env, payload, tok)
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusBadRequest {
+		raw, _ := io.ReadAll(resp.Body)
+		t.Errorf("expected 400 for duplicate email in users, got %d: %s", resp.StatusCode, raw)
+	}
+}
+
+func TestImport_InvalidRole_ReturnsError(t *testing.T) {
+	env := newExportEnv(t)
+	tok := seedGlobalAdmin(t, env)
+
+	payload := map[string]interface{}{
+		"slug": "invalid-role-import",
+		"name": "Invalid Role Import",
+		"users": []map[string]interface{}{
+			{"email": "user@example.com", "password": "pass1", "name": "User", "role": "superadmin"},
+		},
+	}
+	resp := doImportRaw(t, env, payload, tok)
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusBadRequest {
+		raw, _ := io.ReadAll(resp.Body)
+		t.Errorf("expected 400 for invalid role, got %d: %s", resp.StatusCode, raw)
+	}
+}
+
 func TestSlugValidation_RejectsEmpty(t *testing.T) {
 	db := newRoutingDB(t)
 	store := tenant.NewStore(db)

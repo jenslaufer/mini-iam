@@ -5,5 +5,19 @@
   "admin": {
     "email": "admin@demo.app",
     "password": "admin1234"
-  }
+  },
+  "users": [
+    {
+      "email": "admin@demo.app",
+      "name": "Admin",
+      "role": "admin",
+      "password": "admin1234"
+    },
+    {
+      "email": "alice@demo.app",
+      "name": "Alice",
+      "role": "member",
+      "password": "alice1234"
+    }
+  ]
 }

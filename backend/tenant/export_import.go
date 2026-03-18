@@ -19,6 +19,7 @@ type ImportConfig struct {
 	RegistrationEnabled bool             `json:"registration_enabled"`
 	SMTP                *SMTPConfig      `json:"smtp,omitempty"`
 	Admin               *AdminConfig     `json:"admin,omitempty"`
+	Users               []UserConfig     `json:"users,omitempty"`
 	Clients             []ClientConfig   `json:"clients,omitempty"`
 	Segments            []SegmentConfig  `json:"segments,omitempty"`
 	Contacts            []ContactConfig  `json:"contacts,omitempty"`
@@ -28,6 +29,13 @@ type ImportConfig struct {
 type AdminConfig struct {
 	Email    string `json:"email"`
 	Password string `json:"password,omitempty"`
+}
+
+type UserConfig struct {
+	Email    string `json:"email"`
+	Password string `json:"password,omitempty"`
+	Name     string `json:"name"`
+	Role     string `json:"role"`
 }
 
 type ClientConfig struct {
@@ -116,9 +124,26 @@ func ImportTenantConfig(tenantStore *Store, iamStore *iam.Store, mktStore *marke
 	scopedIAM := iamStore.ForTenant(tn.ID)
 	scopedMkt := mktStore.ForTenant(tn.ID)
 
-	if cfg.Admin != nil && cfg.Admin.Email != "" {
-		if err := scopedIAM.SeedAdmin(cfg.Admin.Email, cfg.Admin.Password, "Admin"); err != nil {
-			return nil, err
+	// Merge admin field into users list for unified processing.
+	users := mergeAdminAndUsers(cfg.Admin, cfg.Users)
+
+	if err := validateUsers(users); err != nil {
+		return nil, err
+	}
+
+	for _, u := range users {
+		if u.Role == "admin" {
+			if err := scopedIAM.SeedAdmin(u.Email, u.Password, u.Name); err != nil {
+				return nil, err
+			}
+		} else {
+			created, err := scopedIAM.CreateUser(u.Email, u.Password, u.Name)
+			if err != nil {
+				return nil, err
+			}
+			if _, err := scopedIAM.UpdateUser(created.ID, "", "member"); err != nil {
+				return nil, err
+			}
 		}
 	}
 
@@ -174,6 +199,53 @@ func ImportTenantConfig(tenantStore *Store, iamStore *iam.Store, mktStore *marke
 	return &ImportResult{TenantID: tn.ID, Clients: clients}, nil
 }
 
+// validRoles are the allowed values for UserConfig.Role.
+var validRoles = map[string]bool{"admin": true, "member": true}
+
+// validateUsers checks for duplicate emails and invalid roles.
+func validateUsers(users []UserConfig) error {
+	seen := map[string]bool{}
+	for _, u := range users {
+		lower := strings.ToLower(u.Email)
+		if seen[lower] {
+			return fmt.Errorf("duplicate email in users: %s", u.Email)
+		}
+		seen[lower] = true
+		if !validRoles[u.Role] {
+			return fmt.Errorf("invalid role %q for user %s, must be admin or member", u.Role, u.Email)
+		}
+	}
+	return nil
+}
+
+// mergeAdminAndUsers combines the legacy admin field with the users array.
+// If the admin email already appears in users, the existing entry is promoted to admin.
+// Otherwise the admin is prepended with role=admin.
+func mergeAdminAndUsers(admin *AdminConfig, users []UserConfig) []UserConfig {
+	if admin == nil || admin.Email == "" {
+		return users
+	}
+
+	lowerAdmin := strings.ToLower(admin.Email)
+	for i, u := range users {
+		if strings.ToLower(u.Email) == lowerAdmin {
+			users[i].Role = "admin"
+			if admin.Password != "" && users[i].Password == "" {
+				users[i].Password = admin.Password
+			}
+			return users
+		}
+	}
+
+	name := "Admin"
+	return append([]UserConfig{{
+		Email:    admin.Email,
+		Password: admin.Password,
+		Name:     name,
+		Role:     "admin",
+	}}, users...)
+}
+
 // --- HTTP handler ---
 
 type ExportImportHandler struct {
@@ -217,6 +289,12 @@ func (h *ExportImportHandler) Import(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := ValidateSlug(cfg.Slug); err != nil {
+		iam.WriteError(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+
+	merged := mergeAdminAndUsers(cfg.Admin, cfg.Users)
+	if err := validateUsers(merged); err != nil {
 		iam.WriteError(w, http.StatusBadRequest, "invalid_request", err.Error())
 		return
 	}
@@ -343,15 +421,24 @@ func (h *ExportImportHandler) handleExport(w http.ResponseWriter, r *http.Reques
 		}
 	}
 
-	// Admin — first admin user, email only
+	// Users — export all users with email, name, role (never passwords).
+	// Also set legacy admin field to first admin for backward compat.
 	users, err := scopedIAM.ListUsers()
-	if err == nil {
+	if err == nil && len(users) > 0 {
+		var exportUsers []map[string]string
 		for _, u := range users {
+			exportUsers = append(exportUsers, map[string]string{
+				"email": u.Email,
+				"name":  u.Name,
+				"role":  u.Role,
+			})
 			if u.Role == "admin" {
-				export["admin"] = map[string]string{"email": u.Email}
-				break
+				if _, ok := export["admin"]; !ok {
+					export["admin"] = map[string]string{"email": u.Email}
+				}
 			}
 		}
+		export["users"] = exportUsers
 	}
 
 	// Clients — name + redirect_uris only

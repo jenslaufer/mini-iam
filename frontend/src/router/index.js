@@ -23,6 +23,7 @@ const router = createRouter({
         { path: 'segments', component: () => import('../views/SegmentsView.vue') },
         { path: 'campaigns', component: () => import('../views/CampaignsView.vue') },
         { path: 'tenants', component: () => import('../views/TenantsView.vue') },
+        { path: 'settings', component: () => import('../views/SettingsView.vue') },
       ],
     },
   ],

@@ -83,6 +83,75 @@ export async function getAdminToken(baseURL) {
 }
 
 /**
+ * Obtain an access token for an arbitrary user via the API.
+ * @param {string} baseURL
+ * @param {string} email
+ * @param {string} password
+ * @param {string} [tenant]
+ * @returns {Promise<string>}
+ */
+export async function getUserToken(baseURL, email, password, tenant = '') {
+  const res = await fetch(`${baseURL}/auth/login`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email, password, tenant }),
+  })
+  if (!res.ok) {
+    const body = await res.text()
+    throw new Error(`getUserToken failed (${res.status}): ${body}`)
+  }
+  const data = await res.json()
+  return data.access_token
+}
+
+/**
+ * Change a user's password via the authenticated API.
+ * @param {string} baseURL
+ * @param {string} token
+ * @param {string} currentPassword
+ * @param {string} newPassword
+ * @param {string} confirmPassword
+ * @returns {Promise<Response>}
+ */
+export async function changePasswordApi(baseURL, token, currentPassword, newPassword, confirmPassword = newPassword) {
+  return fetch(`${baseURL}/auth/password`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({
+      current_password: currentPassword,
+      new_password: newPassword,
+      confirm_password: confirmPassword,
+    }),
+  })
+}
+
+/**
+ * Promote a user to admin via the admin API.
+ * @param {string} baseURL
+ * @param {string} token
+ * @param {string} userId
+ * @returns {Promise<object>}
+ */
+export async function promoteToAdmin(baseURL, token, userId) {
+  const res = await fetch(`${baseURL}/auth/admin/users/${userId}`, {
+    method: 'PUT',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({ role: 'admin' }),
+  })
+  if (!res.ok) {
+    const body = await res.text()
+    throw new Error(`promoteToAdmin failed (${res.status}): ${body}`)
+  }
+  return res.json()
+}
+
+/**
  * Create an OAuth2 client via the API using an admin token.
  * @param {string} baseURL
  * @param {string} token

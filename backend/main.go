@@ -144,6 +144,7 @@ func main() {
 	mux.HandleFunc("/.well-known/openid-configuration", iamHandler.Discovery)
 	mux.HandleFunc("/revoke", iamHandler.Revoke)
 	mux.HandleFunc("/clients", iamHandler.CreateClient)
+	mux.HandleFunc("/password", iamHandler.ChangePassword)
 	mux.HandleFunc("/admin/users", iamHandler.AdminListUsers)
 	mux.HandleFunc("/admin/users/", iamHandler.AdminUserByID)
 	mux.HandleFunc("/admin/clients", iamHandler.AdminListClients)

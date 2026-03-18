@@ -742,6 +742,86 @@ func (h *Handler) requireAdmin(w http.ResponseWriter, r *http.Request) (*User, b
 	return CheckAdmin(h.Registry, h.Store, h.PlatformTenantID, w, r)
 }
 
+// requireAuth validates the Bearer token and returns the authenticated user.
+// Unlike requireAdmin, it does not check for the admin role.
+func (h *Handler) requireAuth(w http.ResponseWriter, r *http.Request) (*User, bool) {
+	auth := r.Header.Get("Authorization")
+	if !strings.HasPrefix(auth, "Bearer ") {
+		WriteError(w, http.StatusUnauthorized, "invalid_token", "Bearer token required")
+		return nil, false
+	}
+	tokenStr := strings.TrimPrefix(auth, "Bearer ")
+
+	ts, err := h.tenantTokens(r)
+	if err != nil {
+		WriteError(w, http.StatusInternalServerError, "server_error", "failed to load tenant keys")
+		return nil, false
+	}
+
+	claims, err := ts.ValidateAccessToken(tokenStr)
+	if err != nil {
+		WriteError(w, http.StatusUnauthorized, "invalid_token", "invalid or expired token")
+		return nil, false
+	}
+
+	sub, _ := claims["sub"].(string)
+	store := h.tenantStore(r)
+	user, err := store.GetUserByID(sub)
+	if err != nil {
+		WriteError(w, http.StatusUnauthorized, "invalid_token", "user not found")
+		return nil, false
+	}
+	return user, true
+}
+
+func (h *Handler) ChangePassword(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		WriteError(w, http.StatusMethodNotAllowed, "invalid_request", "method not allowed")
+		return
+	}
+
+	user, ok := h.requireAuth(w, r)
+	if !ok {
+		return
+	}
+
+	var req struct {
+		CurrentPassword string `json:"current_password"`
+		NewPassword     string `json:"new_password"`
+		ConfirmPassword string `json:"confirm_password"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		WriteError(w, http.StatusBadRequest, "invalid_request", "invalid JSON body")
+		return
+	}
+
+	if req.NewPassword != req.ConfirmPassword {
+		WriteError(w, http.StatusBadRequest, "invalid_request", "passwords do not match")
+		return
+	}
+	if len(req.NewPassword) < 8 {
+		WriteError(w, http.StatusBadRequest, "invalid_request", "password must be at least 8 characters")
+		return
+	}
+	if len(req.NewPassword) > 72 {
+		WriteError(w, http.StatusBadRequest, "invalid_request", "password must be at most 72 characters")
+		return
+	}
+
+	store := h.tenantStore(r)
+	if _, err := store.AuthenticateUser(user.Email, req.CurrentPassword); err != nil {
+		WriteError(w, http.StatusUnauthorized, "invalid_grant", "current password is incorrect")
+		return
+	}
+
+	if err := store.UpdateUserPassword(user.ID, req.NewPassword); err != nil {
+		WriteError(w, http.StatusInternalServerError, "server_error", "failed to update password")
+		return
+	}
+
+	WriteJSON(w, http.StatusOK, map[string]string{"status": "password_changed"})
+}
+
 func (h *Handler) AdminListUsers(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		WriteError(w, http.StatusMethodNotAllowed, "invalid_request", "method not allowed")
