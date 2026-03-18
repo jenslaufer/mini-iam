@@ -5,6 +5,7 @@ const routes = [
   { path: '/', component: () => import('../views/Home.vue') },
   { path: '/register', component: () => import('../views/Register.vue') },
   { path: '/login', component: () => import('../views/Login.vue') },
+  { path: '/activate/:token', component: () => import('../views/Activate.vue') },
   {
     path: '/dashboard',
     component: () => import('../views/Dashboard.vue'),

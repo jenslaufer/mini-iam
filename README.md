@@ -260,14 +260,4 @@ cd frontend && npm run test:e2e        # 58 Playwright E2E tests (requires docke
 
 ## Security
 
-- Per-tenant RS256 key pairs (isolated signing)
-- PKCE required for public OAuth2 clients
-- JWT issuer validation (`iss` claim checked)
-- `Cache-Control: no-store` on all token responses
-- Password minimum 8 characters, email max 254 characters
-- CORS origin allowlist (no wildcard default)
-- Bcrypt password hashing
-- Parameterized SQL queries (no injection)
-- Refresh token rotation with revocation
-- Platform admin / tenant admin role separation
-- Registration disabled by default per tenant
+See [SECURITY.md](SECURITY.md) for implemented controls, open findings, and reporting guidelines.
