@@ -16,6 +16,8 @@ const users = ref([])
 const loading = ref(true)
 const search = ref('')
 const openDropdown = ref(null)
+const editingName = ref(null)
+const editNameValue = ref('')
 
 async function loadData() {
   loading.value = true
@@ -49,6 +51,30 @@ function formatDate(iso) {
 
 function toggleDropdown(id) {
   openDropdown.value = openDropdown.value === id ? null : id
+}
+
+function startEditName(user) {
+  editingName.value = user.id
+  editNameValue.value = user.name || ''
+}
+
+function cancelEditName() {
+  editingName.value = null
+  editNameValue.value = ''
+}
+
+async function saveEditName(user) {
+  const newName = editNameValue.value.trim()
+  editingName.value = null
+  if (!newName || newName === user.name) return
+  try {
+    const updated = await updateUser(user.id, { name: newName, role: user.role })
+    const idx = users.value.findIndex((u) => u.id === user.id)
+    if (idx !== -1) users.value[idx] = updated
+    toast.add('success', 'Name updated')
+  } catch {
+    toast.add('error', 'Failed to update name')
+  }
 }
 
 async function changeRole(user, role) {
@@ -132,7 +158,19 @@ async function remove(user) {
             class="border-b border-slate-100 last:border-0 hover:bg-slate-50 transition-colors"
           >
             <td class="px-4 py-3 text-slate-900 font-medium">{{ user.email }}</td>
-            <td class="px-4 py-3 text-slate-600">{{ user.name || '—' }}</td>
+            <td class="px-4 py-3 text-slate-600" @click="editingName !== user.id && startEditName(user)">
+              <input
+                v-if="editingName === user.id"
+                v-model="editNameValue"
+                type="text"
+                class="w-full px-2 py-1 rounded border border-slate-300 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                @keydown.enter="saveEditName(user)"
+                @keydown.escape="cancelEditName"
+                @blur="saveEditName(user)"
+                @vue:mounted="({ el }) => el.focus()"
+              />
+              <span v-else class="cursor-pointer hover:text-blue-600">{{ user.name || '—' }}</span>
+            </td>
             <td class="px-4 py-3"><RoleBadge :role="user.role" /></td>
             <td class="px-4 py-3 text-slate-500">{{ formatDate(user.created_at) }}</td>
             <td class="px-4 py-3">

@@ -192,6 +192,54 @@ export async function deleteUserApi(baseURL, token, userId) {
 }
 
 /**
+ * Update a client via the admin API.
+ * @param {string} baseURL
+ * @param {string} token
+ * @param {string} clientId
+ * @param {object} body
+ * @returns {Promise<object>}
+ */
+export async function updateClientApi(baseURL, token, clientId, body) {
+  const res = await fetch(`${baseURL}/auth/admin/clients/${clientId}`, {
+    method: 'PUT',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify(body),
+  })
+  if (!res.ok) {
+    const text = await res.text()
+    throw new Error(`updateClient failed (${res.status}): ${text}`)
+  }
+  return res.json()
+}
+
+/**
+ * Update a contact via the admin API.
+ * @param {string} baseURL
+ * @param {string} token
+ * @param {string} id
+ * @param {object} body
+ * @returns {Promise<object>}
+ */
+export async function updateContactApi(baseURL, token, id, body) {
+  const res = await fetch(`${baseURL}/auth/admin/contacts/${id}`, {
+    method: 'PUT',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify(body),
+  })
+  if (!res.ok) {
+    const text = await res.text()
+    throw new Error(`updateContact failed (${res.status}): ${text}`)
+  }
+  return res.json()
+}
+
+/**
  * Delete a client via the admin API.
  * @param {string} baseURL
  * @param {string} token
