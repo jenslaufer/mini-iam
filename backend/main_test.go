@@ -3831,13 +3831,9 @@ func TestUnsubscribe(t *testing.T) {
 		resp1.Body.Close()
 
 		resp2 := doRequest(t, env.srv, "POST", "/unsubscribe/"+contact.UnsubscribeToken, "", "")
-		// A second POST to the same token is either 200 or an error — must not crash.
-		if resp2.StatusCode != http.StatusOK && resp2.StatusCode != http.StatusNotFound {
-			body := readBody(resp2)
-			t.Errorf("double unsubscribe: expected 200 or 404, got %d (body=%q)", resp2.StatusCode, body)
-		} else {
-			resp2.Body.Close()
-		}
+		// Unsubscribe must be idempotent — always return 200.
+		assertStatus(t, resp2, http.StatusOK)
+		resp2.Body.Close()
 
 		// Either way, the contact must remain unsubscribed.
 		updated, _ := env.store.GetContactByEmail("doubleun@test.com")
@@ -4285,6 +4281,250 @@ func TestInviteActivationFlow(t *testing.T) {
 		sent, _ := stats["sent"].(float64)
 		if int(sent) != 1 {
 			t.Errorf("expected 1 sent recipient, got %v", stats["sent"])
+		}
+	})
+}
+
+// ---------------------------------------------------------------------------
+// TestLifecycleTokenSecurity (Issue #20)
+// ---------------------------------------------------------------------------
+
+func TestLifecycleTokenSecurity(t *testing.T) {
+	// --- Item 1: Single-use activation tokens ---
+
+	t.Run("activation_token_invalidated_after_use", func(t *testing.T) {
+		env := newTestEnv(t)
+		adminToken := loginAsAdmin(t, env)
+
+		c := createContact(t, env, adminToken, "singleuse@test.com", "Single Use")
+		inviteToken, _ := c["invite_token"].(string)
+		if inviteToken == "" {
+			t.Fatal("expected invite_token")
+		}
+
+		// First activation succeeds.
+		resp := doRequest(t, env.srv, "POST", "/activate/"+inviteToken, "",
+			`{"password":"password123"}`)
+		assertStatus(t, resp, http.StatusOK)
+		resp.Body.Close()
+
+		// Second activation with same token must fail.
+		resp2 := doRequest(t, env.srv, "POST", "/activate/"+inviteToken, "",
+			`{"password":"password456"}`)
+		if resp2.StatusCode != http.StatusNotFound {
+			t.Errorf("second activation: want 404, got %d", resp2.StatusCode)
+		}
+		resp2.Body.Close()
+
+		// GET with used token must also fail.
+		resp3 := doGet(t, env.srv, "/activate/"+inviteToken, nil)
+		if resp3.StatusCode != http.StatusNotFound {
+			t.Errorf("GET used token: want 404, got %d", resp3.StatusCode)
+		}
+		resp3.Body.Close()
+	})
+
+	t.Run("activation_does_not_create_duplicate_user", func(t *testing.T) {
+		env := newTestEnv(t)
+		adminToken := loginAsAdmin(t, env)
+
+		c := createContact(t, env, adminToken, "nodup@test.com", "No Dup")
+		inviteToken, _ := c["invite_token"].(string)
+
+		resp := doRequest(t, env.srv, "POST", "/activate/"+inviteToken, "",
+			`{"password":"password123"}`)
+		assertStatus(t, resp, http.StatusOK)
+		resp.Body.Close()
+
+		// Attempting activation again must not create a second user.
+		resp2 := doRequest(t, env.srv, "POST", "/activate/"+inviteToken, "",
+			`{"password":"password456"}`)
+		if resp2.StatusCode != http.StatusNotFound {
+			t.Errorf("duplicate activation: want 404, got %d", resp2.StatusCode)
+		}
+		resp2.Body.Close()
+
+		// Verify only one login works.
+		loginResp := doJSON(t, env.srv, "/login", map[string]any{
+			"email":    "nodup@test.com",
+			"password": "password123",
+		})
+		assertStatus(t, loginResp, http.StatusOK)
+		loginResp.Body.Close()
+	})
+
+	// --- Item 2: Idempotent unsubscribe ---
+
+	t.Run("unsubscribe_is_idempotent_returns_200", func(t *testing.T) {
+		env := newTestEnv(t)
+		adminToken := loginAsAdmin(t, env)
+
+		createContact(t, env, adminToken, "idempotent@test.com", "Idempotent")
+		contact, err := env.store.GetContactByEmail("idempotent@test.com")
+		if err != nil {
+			t.Fatalf("GetContactByEmail: %v", err)
+		}
+
+		// First unsubscribe.
+		resp1 := doRequest(t, env.srv, "POST", "/unsubscribe/"+contact.UnsubscribeToken, "", "")
+		assertStatus(t, resp1, http.StatusOK)
+		resp1.Body.Close()
+
+		// Second unsubscribe must also return 200 (idempotent).
+		resp2 := doRequest(t, env.srv, "POST", "/unsubscribe/"+contact.UnsubscribeToken, "", "")
+		assertStatus(t, resp2, http.StatusOK)
+		resp2.Body.Close()
+
+		// Third time for good measure.
+		resp3 := doRequest(t, env.srv, "POST", "/unsubscribe/"+contact.UnsubscribeToken, "", "")
+		assertStatus(t, resp3, http.StatusOK)
+		resp3.Body.Close()
+
+		// Verify still unsubscribed.
+		updated, _ := env.store.GetContactByEmail("idempotent@test.com")
+		if !updated.Unsubscribed {
+			t.Error("contact must remain unsubscribed")
+		}
+	})
+
+	t.Run("unsubscribe_token_does_not_grant_other_access", func(t *testing.T) {
+		env := newTestEnv(t)
+		adminToken := loginAsAdmin(t, env)
+
+		createContact(t, env, adminToken, "noaccess@test.com", "No Access")
+		contact, _ := env.store.GetContactByEmail("noaccess@test.com")
+
+		// Unsubscribe token used as activate token must fail.
+		resp := doRequest(t, env.srv, "POST", "/activate/"+contact.UnsubscribeToken, "",
+			`{"password":"password123"}`)
+		if resp.StatusCode == http.StatusOK {
+			t.Error("unsubscribe token must not work as activation token")
+		}
+		resp.Body.Close()
+	})
+
+	// --- Item 3: TTL expiry for lifecycle tokens ---
+
+	t.Run("expired_invite_token_rejected", func(t *testing.T) {
+		env := newTestEnv(t)
+		adminToken := loginAsAdmin(t, env)
+
+		c := createContact(t, env, adminToken, "expired@test.com", "Expired")
+		inviteToken, _ := c["invite_token"].(string)
+		if inviteToken == "" {
+			t.Fatal("expected invite_token")
+		}
+
+		// Expire the token by backdating invite_token_expires_at.
+		_, err := env.store.DB().Exec(
+			"UPDATE contacts SET invite_token_expires_at = ? WHERE invite_token = ?",
+			time.Now().Add(-1*time.Hour), inviteToken,
+		)
+		if err != nil {
+			t.Fatalf("backdate invite_token_expires_at: %v", err)
+		}
+
+		// GET with expired token must fail.
+		resp := doGet(t, env.srv, "/activate/"+inviteToken, nil)
+		if resp.StatusCode != http.StatusNotFound {
+			t.Errorf("GET expired token: want 404, got %d", resp.StatusCode)
+		}
+		resp.Body.Close()
+
+		// POST with expired token must fail.
+		resp2 := doRequest(t, env.srv, "POST", "/activate/"+inviteToken, "",
+			`{"password":"password123"}`)
+		if resp2.StatusCode != http.StatusNotFound {
+			t.Errorf("POST expired token: want 404, got %d", resp2.StatusCode)
+		}
+		resp2.Body.Close()
+	})
+
+	t.Run("non_expired_invite_token_works", func(t *testing.T) {
+		env := newTestEnv(t)
+		adminToken := loginAsAdmin(t, env)
+
+		c := createContact(t, env, adminToken, "fresh@test.com", "Fresh")
+		inviteToken, _ := c["invite_token"].(string)
+		if inviteToken == "" {
+			t.Fatal("expected invite_token")
+		}
+
+		// Token should be valid (freshly created).
+		resp := doGet(t, env.srv, "/activate/"+inviteToken, nil)
+		assertStatus(t, resp, http.StatusOK)
+		body := readBody(resp)
+		if !strings.Contains(body, "<form") {
+			t.Error("expected HTML form for non-expired token")
+		}
+	})
+
+	// --- Item 4: Invite token exposure audit ---
+
+	t.Run("invite_token_not_in_list_contacts_response", func(t *testing.T) {
+		env := newTestEnv(t)
+		adminToken := loginAsAdmin(t, env)
+
+		createContact(t, env, adminToken, "audit@test.com", "Audit")
+
+		resp := doRequest(t, env.srv, "GET", "/admin/contacts", adminToken, "")
+		assertStatus(t, resp, http.StatusOK)
+		body := readBody(resp)
+
+		if strings.Contains(body, "invite_token") {
+			t.Error("invite_token must not appear in list contacts response")
+		}
+	})
+
+	t.Run("invite_token_not_in_get_contact_response", func(t *testing.T) {
+		env := newTestEnv(t)
+		adminToken := loginAsAdmin(t, env)
+
+		c := createContact(t, env, adminToken, "audit2@test.com", "Audit2")
+		contactID, _ := c["id"].(string)
+
+		resp := doRequest(t, env.srv, "GET", "/admin/contacts/"+contactID, adminToken, "")
+		assertStatus(t, resp, http.StatusOK)
+		body := readBody(resp)
+
+		if strings.Contains(body, "invite_token") {
+			t.Error("invite_token must not appear in get contact response")
+		}
+	})
+
+	t.Run("unsubscribe_token_not_in_any_api_response", func(t *testing.T) {
+		env := newTestEnv(t)
+		adminToken := loginAsAdmin(t, env)
+
+		c := createContact(t, env, adminToken, "audit3@test.com", "Audit3")
+		contactID, _ := c["id"].(string)
+
+		// Check list response.
+		listResp := doRequest(t, env.srv, "GET", "/admin/contacts", adminToken, "")
+		assertStatus(t, listResp, http.StatusOK)
+		listBody := readBody(listResp)
+		if strings.Contains(listBody, "unsubscribe_token") {
+			t.Error("unsubscribe_token must not appear in list contacts response")
+		}
+
+		// Check detail response.
+		detailResp := doRequest(t, env.srv, "GET", "/admin/contacts/"+contactID, adminToken, "")
+		assertStatus(t, detailResp, http.StatusOK)
+		detailBody := readBody(detailResp)
+		if strings.Contains(detailBody, "unsubscribe_token") {
+			t.Error("unsubscribe_token must not appear in get contact response")
+		}
+	})
+
+	t.Run("invite_token_only_in_creation_response", func(t *testing.T) {
+		env := newTestEnv(t)
+		adminToken := loginAsAdmin(t, env)
+
+		// Creation response SHOULD contain invite_token (admin needs it).
+		c := createContact(t, env, adminToken, "creation@test.com", "Creation")
+		inviteToken, _ := c["invite_token"].(string)
+		if inviteToken == "" {
+			t.Error("creation response must include invite_token")
 		}
 	})
 }

@@ -25,7 +25,7 @@ func newTestDB(t *testing.T) *sql.DB {
 		user_id TEXT,
 		unsubscribed INTEGER NOT NULL DEFAULT 0,
 		unsubscribe_token TEXT UNIQUE NOT NULL,
-		invite_token TEXT UNIQUE,
+		invite_token TEXT UNIQUE, invite_token_expires_at DATETIME,
 		consent_source TEXT NOT NULL,
 		consent_at DATETIME NOT NULL,
 		created_at DATETIME NOT NULL,
