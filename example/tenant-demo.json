@@ -1,23 +1,38 @@
-{
-  "slug": "demo",
-  "name": "Demo App",
-  "registration_enabled": true,
-  "admin": {
-    "email": "admin@demo.app",
-    "password": "admin1234"
-  },
-  "users": [
-    {
+[
+  {
+    "slug": "demo",
+    "name": "Demo App",
+    "registration_enabled": true,
+    "admin": {
       "email": "admin@demo.app",
-      "name": "Admin",
-      "role": "admin",
       "password": "admin1234"
     },
-    {
-      "email": "alice@demo.app",
-      "name": "Alice",
-      "role": "member",
-      "password": "alice1234"
-    }
-  ]
-}
+    "users": [
+      {
+        "email": "admin@demo.app",
+        "name": "Admin",
+        "role": "admin",
+        "password": "admin1234"
+      },
+      {
+        "email": "alice@demo.app",
+        "name": "Alice",
+        "role": "member",
+        "password": "alice1234"
+      }
+    ]
+  },
+  {
+    "slug": "acme",
+    "name": "Acme Corp",
+    "registration_enabled": false,
+    "users": [
+      {
+        "email": "boss@acme.com",
+        "name": "Boss",
+        "role": "admin",
+        "password": "boss1234"
+      }
+    ]
+  }
+]

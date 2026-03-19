@@ -4288,3 +4288,84 @@ func TestInviteActivationFlow(t *testing.T) {
 		}
 	})
 }
+
+// ---------------------------------------------------------------------------
+// TestParseTenantConfigs
+// ---------------------------------------------------------------------------
+
+func TestParseTenantConfigs(t *testing.T) {
+	t.Run("single object", func(t *testing.T) {
+		data := []byte(`{"slug":"demo","name":"Demo"}`)
+		configs, err := parseTenantConfigs(data)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(configs) != 1 {
+			t.Fatalf("expected 1 config, got %d", len(configs))
+		}
+		if configs[0].Slug != "demo" {
+			t.Errorf("slug: got %q, want %q", configs[0].Slug, "demo")
+		}
+		if configs[0].Name != "Demo" {
+			t.Errorf("name: got %q, want %q", configs[0].Name, "Demo")
+		}
+	})
+
+	t.Run("array of objects", func(t *testing.T) {
+		data := []byte(`[{"slug":"a","name":"A"},{"slug":"b","name":"B"}]`)
+		configs, err := parseTenantConfigs(data)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(configs) != 2 {
+			t.Fatalf("expected 2 configs, got %d", len(configs))
+		}
+		if configs[0].Slug != "a" {
+			t.Errorf("configs[0].slug: got %q, want %q", configs[0].Slug, "a")
+		}
+		if configs[1].Slug != "b" {
+			t.Errorf("configs[1].slug: got %q, want %q", configs[1].Slug, "b")
+		}
+	})
+
+	t.Run("single object with whitespace", func(t *testing.T) {
+		data := []byte(`  { "slug": "ws", "name": "Whitespace" }  `)
+		configs, err := parseTenantConfigs(data)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(configs) != 1 || configs[0].Slug != "ws" {
+			t.Errorf("unexpected result: %+v", configs)
+		}
+	})
+
+	t.Run("array with whitespace", func(t *testing.T) {
+		data := []byte(`  [ { "slug": "x", "name": "X" } ]  `)
+		configs, err := parseTenantConfigs(data)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(configs) != 1 || configs[0].Slug != "x" {
+			t.Errorf("unexpected result: %+v", configs)
+		}
+	})
+
+	t.Run("invalid JSON returns error", func(t *testing.T) {
+		data := []byte(`{invalid`)
+		_, err := parseTenantConfigs(data)
+		if err == nil {
+			t.Fatal("expected error for invalid JSON")
+		}
+	})
+
+	t.Run("empty array", func(t *testing.T) {
+		data := []byte(`[]`)
+		configs, err := parseTenantConfigs(data)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(configs) != 0 {
+			t.Errorf("expected 0 configs, got %d", len(configs))
+		}
+	})
+}
