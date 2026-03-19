@@ -95,8 +95,7 @@ func (h *Handler) Register(w http.ResponseWriter, r *http.Request) {
 		Password string `json:"password"`
 		Name     string `json:"name"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		WriteError(w, http.StatusBadRequest, "invalid_request", "invalid JSON body")
+	if !DecodeJSON(w, r, &req) {
 		return
 	}
 
@@ -137,8 +136,7 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 		Email    string `json:"email"`
 		Password string `json:"password"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		WriteError(w, http.StatusBadRequest, "invalid_request", "invalid JSON body")
+	if !DecodeJSON(w, r, &req) {
 		return
 	}
 
@@ -328,7 +326,7 @@ func (h *Handler) tokenAuthorizationCode(w http.ResponseWriter, r *http.Request)
 	store := h.tenantStore(r)
 	ac, err := store.ConsumeAuthCode(code)
 	if err != nil {
-		WriteError(w, http.StatusBadRequest, "invalid_grant", err.Error())
+		WriteError(w, http.StatusBadRequest, "invalid_grant", "invalid or expired authorization code")
 		return
 	}
 
@@ -420,7 +418,7 @@ func (h *Handler) tokenRefreshToken(w http.ResponseWriter, r *http.Request) {
 	store := h.tenantStore(r)
 	rt, err := store.ValidateRefreshToken(token)
 	if err != nil {
-		WriteError(w, http.StatusBadRequest, "invalid_grant", err.Error())
+		WriteError(w, http.StatusBadRequest, "invalid_grant", "invalid or expired refresh token")
 		return
 	}
 
@@ -585,8 +583,7 @@ func (h *Handler) CreateClient(w http.ResponseWriter, r *http.Request) {
 		Name         string   `json:"name"`
 		RedirectURIs []string `json:"redirect_uris"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		WriteError(w, http.StatusBadRequest, "invalid_request", "invalid JSON body")
+	if !DecodeJSON(w, r, &req) {
 		return
 	}
 
@@ -789,8 +786,7 @@ func (h *Handler) ChangePassword(w http.ResponseWriter, r *http.Request) {
 		CurrentPassword string `json:"current_password"`
 		NewPassword     string `json:"new_password"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		WriteError(w, http.StatusBadRequest, "invalid_request", "invalid JSON body")
+	if !DecodeJSON(w, r, &req) {
 		return
 	}
 
@@ -844,6 +840,10 @@ func (h *Handler) AdminUserByID(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, http.StatusBadRequest, "invalid_request", "user id required")
 		return
 	}
+	if !ValidUUID(id) {
+		WriteError(w, http.StatusBadRequest, "invalid_request", "invalid user id format")
+		return
+	}
 
 	store := h.tenantStore(r)
 
@@ -861,8 +861,7 @@ func (h *Handler) AdminUserByID(w http.ResponseWriter, r *http.Request) {
 			Name string `json:"name"`
 			Role string `json:"role"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			WriteError(w, http.StatusBadRequest, "invalid_request", "invalid JSON body")
+		if !DecodeJSON(w, r, &req) {
 			return
 		}
 		if req.Role != "" && req.Role != "user" && req.Role != "admin" {
@@ -929,6 +928,10 @@ func (h *Handler) AdminClientByID(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, http.StatusBadRequest, "invalid_request", "client id required")
 		return
 	}
+	if !ValidUUID(id) {
+		WriteError(w, http.StatusBadRequest, "invalid_request", "invalid client id format")
+		return
+	}
 
 	store := h.tenantStore(r)
 
@@ -946,8 +949,7 @@ func (h *Handler) AdminClientByID(w http.ResponseWriter, r *http.Request) {
 			Name         string   `json:"name"`
 			RedirectURIs []string `json:"redirect_uris"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			WriteError(w, http.StatusBadRequest, "invalid_request", "invalid JSON body")
+		if !DecodeJSON(w, r, &req) {
 			return
 		}
 		client, err := store.UpdateClient(id, req.Name, req.RedirectURIs)
@@ -1034,8 +1036,7 @@ button:hover{background:#1d4ed8}
 			var req struct {
 				Password string `json:"password"`
 			}
-			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-				WriteError(w, http.StatusBadRequest, "invalid_request", "invalid JSON body")
+			if !DecodeJSON(w, r, &req) {
 				return
 			}
 			password = req.Password
@@ -1072,7 +1073,7 @@ button:hover{background:#1d4ed8}
 		user, err := store.ActivateContact(token, password)
 		if err != nil {
 			if isJSON {
-				WriteError(w, http.StatusNotFound, "not_found", err.Error())
+				WriteError(w, http.StatusNotFound, "not_found", "invalid or expired invite")
 			} else {
 				w.Header().Set("Content-Type", "text/html")
 				w.WriteHeader(http.StatusNotFound)

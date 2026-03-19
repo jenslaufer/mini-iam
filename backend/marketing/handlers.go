@@ -1,7 +1,6 @@
 package marketing
 
 import (
-	"encoding/json"
 	"fmt"
 	"html"
 	"net/http"
@@ -60,8 +59,7 @@ func (h *Handler) AdminContacts(w http.ResponseWriter, r *http.Request) {
 			Email string `json:"email"`
 			Name  string `json:"name"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			iam.WriteError(w, http.StatusBadRequest, "invalid_request", "invalid JSON body")
+		if !iam.DecodeJSON(w, r, &req) {
 			return
 		}
 		if !iam.EmailRegex.MatchString(req.Email) {
@@ -110,6 +108,10 @@ func (h *Handler) AdminContactByID(w http.ResponseWriter, r *http.Request) {
 		iam.WriteError(w, http.StatusBadRequest, "invalid_request", "contact id required")
 		return
 	}
+	if !iam.ValidUUID(id) {
+		iam.WriteError(w, http.StatusBadRequest, "invalid_request", "invalid contact id format")
+		return
+	}
 
 	store := h.tenantStore(r)
 
@@ -129,8 +131,7 @@ func (h *Handler) AdminContactByID(w http.ResponseWriter, r *http.Request) {
 			Name  string `json:"name"`
 			Email string `json:"email"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			iam.WriteError(w, http.StatusBadRequest, "invalid_request", "invalid JSON body")
+		if !iam.DecodeJSON(w, r, &req) {
 			return
 		}
 		contact, err := store.UpdateContact(id, req.Name, req.Email)
@@ -139,14 +140,14 @@ func (h *Handler) AdminContactByID(w http.ResponseWriter, r *http.Request) {
 				iam.WriteError(w, http.StatusConflict, "invalid_request", "email already exists")
 				return
 			}
-			iam.WriteError(w, http.StatusNotFound, "not_found", err.Error())
+			iam.WriteError(w, http.StatusNotFound, "not_found", "contact not found")
 			return
 		}
 		iam.WriteJSON(w, http.StatusOK, contact)
 
 	case http.MethodDelete:
 		if err := store.DeleteContact(id); err != nil {
-			iam.WriteError(w, http.StatusNotFound, "not_found", err.Error())
+			iam.WriteError(w, http.StatusNotFound, "not_found", "contact not found")
 			return
 		}
 		iam.WriteJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
@@ -166,8 +167,7 @@ func (h *Handler) AdminImportContacts(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var contacts []ContactImport
-	if err := json.NewDecoder(r.Body).Decode(&contacts); err != nil {
-		iam.WriteError(w, http.StatusBadRequest, "invalid_request", "invalid JSON body, expected array of {email, name}")
+	if !iam.DecodeJSON(w, r, &contacts) {
 		return
 	}
 
@@ -227,8 +227,7 @@ func (h *Handler) AdminSegments(w http.ResponseWriter, r *http.Request) {
 			Name        string `json:"name"`
 			Description string `json:"description"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			iam.WriteError(w, http.StatusBadRequest, "invalid_request", "invalid JSON body")
+		if !iam.DecodeJSON(w, r, &req) {
 			return
 		}
 		if req.Name == "" {
@@ -265,18 +264,26 @@ func (h *Handler) AdminSegmentByID(w http.ResponseWriter, r *http.Request) {
 		iam.WriteError(w, http.StatusBadRequest, "invalid_request", "segment id required")
 		return
 	}
+	if !iam.ValidUUID(segmentID) {
+		iam.WriteError(w, http.StatusBadRequest, "invalid_request", "invalid segment id format")
+		return
+	}
 
 	store := h.tenantStore(r)
 
 	// /admin/segments/{id}/contacts/{contact_id}
 	if len(parts) == 3 && parts[1] == "contacts" {
 		contactID := parts[2]
+		if !iam.ValidUUID(contactID) {
+			iam.WriteError(w, http.StatusBadRequest, "invalid_request", "invalid contact id format")
+			return
+		}
 		if r.Method != http.MethodDelete {
 			iam.WriteError(w, http.StatusMethodNotAllowed, "invalid_request", "method not allowed")
 			return
 		}
 		if err := store.RemoveContactFromSegment(contactID, segmentID); err != nil {
-			iam.WriteError(w, http.StatusNotFound, "not_found", err.Error())
+			iam.WriteError(w, http.StatusNotFound, "not_found", "contact or segment not found")
 			return
 		}
 		iam.WriteJSON(w, http.StatusOK, map[string]string{"status": "removed"})
@@ -292,8 +299,7 @@ func (h *Handler) AdminSegmentByID(w http.ResponseWriter, r *http.Request) {
 		var req struct {
 			ContactID string `json:"contact_id"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			iam.WriteError(w, http.StatusBadRequest, "invalid_request", "invalid JSON body")
+		if !iam.DecodeJSON(w, r, &req) {
 			return
 		}
 		if req.ContactID == "" {
@@ -331,8 +337,7 @@ func (h *Handler) AdminSegmentByID(w http.ResponseWriter, r *http.Request) {
 			Name        string `json:"name"`
 			Description string `json:"description"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			iam.WriteError(w, http.StatusBadRequest, "invalid_request", "invalid JSON body")
+		if !iam.DecodeJSON(w, r, &req) {
 			return
 		}
 		if req.Name == "" {
@@ -341,14 +346,14 @@ func (h *Handler) AdminSegmentByID(w http.ResponseWriter, r *http.Request) {
 		}
 		seg, err := store.UpdateSegment(segmentID, req.Name, req.Description)
 		if err != nil {
-			iam.WriteError(w, http.StatusNotFound, "not_found", err.Error())
+			iam.WriteError(w, http.StatusNotFound, "not_found", "segment not found")
 			return
 		}
 		iam.WriteJSON(w, http.StatusOK, seg)
 
 	case http.MethodDelete:
 		if err := store.DeleteSegment(segmentID); err != nil {
-			iam.WriteError(w, http.StatusNotFound, "not_found", err.Error())
+			iam.WriteError(w, http.StatusNotFound, "not_found", "segment not found")
 			return
 		}
 		iam.WriteJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
@@ -384,8 +389,7 @@ func (h *Handler) AdminCampaigns(w http.ResponseWriter, r *http.Request) {
 			FromEmail  string   `json:"from_email"`
 			SegmentIDs []string `json:"segment_ids"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			iam.WriteError(w, http.StatusBadRequest, "invalid_request", "invalid JSON body")
+		if !iam.DecodeJSON(w, r, &req) {
 			return
 		}
 		if req.Subject == "" {
@@ -419,6 +423,10 @@ func (h *Handler) AdminCampaignByID(w http.ResponseWriter, r *http.Request) {
 
 	if campaignID == "" {
 		iam.WriteError(w, http.StatusBadRequest, "invalid_request", "campaign id required")
+		return
+	}
+	if !iam.ValidUUID(campaignID) {
+		iam.WriteError(w, http.StatusBadRequest, "invalid_request", "invalid campaign id format")
 		return
 	}
 
@@ -485,14 +493,13 @@ func (h *Handler) AdminCampaignByID(w http.ResponseWriter, r *http.Request) {
 			FromEmail  string   `json:"from_email"`
 			SegmentIDs []string `json:"segment_ids"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			iam.WriteError(w, http.StatusBadRequest, "invalid_request", "invalid JSON body")
+		if !iam.DecodeJSON(w, r, &req) {
 			return
 		}
 		campaign, err := store.UpdateCampaign(campaignID, req.Subject, req.HTMLBody, req.FromName, req.FromEmail, req.SegmentIDs)
 		if err != nil {
 			if strings.Contains(err.Error(), "draft") {
-				iam.WriteError(w, http.StatusBadRequest, "invalid_request", err.Error())
+				iam.WriteError(w, http.StatusBadRequest, "invalid_request", "can only update draft campaigns")
 				return
 			}
 			iam.WriteError(w, http.StatusNotFound, "not_found", "campaign not found")
@@ -503,10 +510,10 @@ func (h *Handler) AdminCampaignByID(w http.ResponseWriter, r *http.Request) {
 	case http.MethodDelete:
 		if err := store.DeleteCampaign(campaignID); err != nil {
 			if strings.Contains(err.Error(), "draft") {
-				iam.WriteError(w, http.StatusBadRequest, "invalid_request", err.Error())
+				iam.WriteError(w, http.StatusBadRequest, "invalid_request", "can only delete draft campaigns")
 				return
 			}
-			iam.WriteError(w, http.StatusNotFound, "not_found", err.Error())
+			iam.WriteError(w, http.StatusNotFound, "not_found", "campaign not found")
 			return
 		}
 		iam.WriteJSON(w, http.StatusOK, map[string]string{"status": "deleted"})

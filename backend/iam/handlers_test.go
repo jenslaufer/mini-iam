@@ -771,7 +771,7 @@ func TestAdminDeleteClientNotFound(t *testing.T) {
 	env := newHandlerEnv(t)
 	tok := adminToken(t, env)
 
-	resp := doReq(t, env, "DELETE", "/admin/clients/nonexistent", tok, "")
+	resp := doReq(t, env, "DELETE", "/admin/clients/00000000-0000-0000-0000-000000000000", tok, "")
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusNotFound {
 		t.Errorf("status = %d", resp.StatusCode)
@@ -821,7 +821,7 @@ func TestUpdateClientNotFound(t *testing.T) {
 	env := newHandlerEnv(t)
 	tok := adminToken(t, env)
 
-	resp := doReq(t, env, "PUT", "/admin/clients/nonexistent", tok,
+	resp := doReq(t, env, "PUT", "/admin/clients/00000000-0000-0000-0000-000000000000", tok,
 		`{"name":"X","redirect_uris":["http://x/cb"]}`)
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusNotFound {

@@ -1,7 +1,6 @@
 package tenant
 
 import (
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"regexp"
@@ -368,8 +367,7 @@ func (h *ExportImportHandler) Import(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var cfg ImportConfig
-	if err := json.NewDecoder(r.Body).Decode(&cfg); err != nil {
-		iam.WriteError(w, http.StatusBadRequest, "invalid_request", "invalid JSON body")
+	if !iam.DecodeJSON(w, r, &cfg) {
 		return
 	}
 
@@ -379,13 +377,13 @@ func (h *ExportImportHandler) Import(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := ValidateSlug(cfg.Slug); err != nil {
-		iam.WriteError(w, http.StatusBadRequest, "invalid_request", err.Error())
+		iam.WriteError(w, http.StatusBadRequest, "invalid_request", "invalid slug format")
 		return
 	}
 
 	merged := mergeAdminAndUsers(cfg.Admin, cfg.Users)
 	if err := validateUsers(merged); err != nil {
-		iam.WriteError(w, http.StatusBadRequest, "invalid_request", err.Error())
+		iam.WriteError(w, http.StatusBadRequest, "invalid_request", "invalid user configuration")
 		return
 	}
 
@@ -395,7 +393,7 @@ func (h *ExportImportHandler) Import(w http.ResponseWriter, r *http.Request) {
 			iam.WriteError(w, http.StatusConflict, "invalid_request", "tenant slug already exists")
 			return
 		}
-		iam.WriteError(w, http.StatusInternalServerError, "server_error", err.Error())
+		iam.WriteError(w, http.StatusInternalServerError, "server_error", "failed to import tenant")
 		return
 	}
 	if result.Skipped {
@@ -438,21 +436,20 @@ func (h *ExportImportHandler) handleUpdateTenant(w http.ResponseWriter, r *http.
 	}
 
 	var req updateTenantRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		iam.WriteError(w, http.StatusBadRequest, "invalid_request", "invalid JSON body")
+	if !iam.DecodeJSON(w, r, &req) {
 		return
 	}
 
 	if req.Name != nil {
 		if err := h.tenantStore.UpdateName(id, *req.Name); err != nil {
-			iam.WriteError(w, http.StatusInternalServerError, "server_error", err.Error())
+			iam.WriteError(w, http.StatusInternalServerError, "server_error", "failed to update tenant name")
 			return
 		}
 	}
 
 	if req.RegistrationEnabled != nil {
 		if err := h.tenantStore.UpdateRegistrationEnabled(id, *req.RegistrationEnabled); err != nil {
-			iam.WriteError(w, http.StatusInternalServerError, "server_error", err.Error())
+			iam.WriteError(w, http.StatusInternalServerError, "server_error", "failed to update registration setting")
 			return
 		}
 	}
@@ -468,7 +465,7 @@ func (h *ExportImportHandler) handleUpdateTenant(w http.ResponseWriter, r *http.
 			RateMS:   req.SMTP.RateMS,
 		}
 		if err := h.tenantStore.UpdateSMTP(id, smtp); err != nil {
-			iam.WriteError(w, http.StatusInternalServerError, "server_error", err.Error())
+			iam.WriteError(w, http.StatusInternalServerError, "server_error", "failed to update SMTP settings")
 			return
 		}
 	}
@@ -476,7 +473,7 @@ func (h *ExportImportHandler) handleUpdateTenant(w http.ResponseWriter, r *http.
 	// Return updated tenant with sanitized password
 	t, err := h.tenantStore.GetByID(id)
 	if err != nil {
-		iam.WriteError(w, http.StatusInternalServerError, "server_error", err.Error())
+		iam.WriteError(w, http.StatusInternalServerError, "server_error", "failed to load tenant")
 		return
 	}
 	t.SMTP.Password = ""
@@ -505,8 +502,7 @@ func (h *ExportImportHandler) ImportBatch(w http.ResponseWriter, r *http.Request
 	}
 
 	var configs []ImportConfig
-	if err := json.NewDecoder(r.Body).Decode(&configs); err != nil {
-		iam.WriteError(w, http.StatusBadRequest, "invalid_request", "invalid JSON body")
+	if !iam.DecodeJSON(w, r, &configs) {
 		return
 	}
 
@@ -516,7 +512,7 @@ func (h *ExportImportHandler) ImportBatch(w http.ResponseWriter, r *http.Request
 
 		result, err := ImportTenantConfig(h.tenantStore, h.iamStore, h.mktStore, cfg)
 		if err != nil {
-			entry.Error = err.Error()
+			entry.Error = "import failed"
 			results = append(results, entry)
 			continue
 		}

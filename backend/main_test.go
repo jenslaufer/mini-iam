@@ -2184,7 +2184,7 @@ func TestAdminGetUser(t *testing.T) {
 
 		token := loginAsAdmin(t, env)
 
-		resp := doRequest(t, env.srv, "GET", "/admin/users/does-not-exist-at-all", token, "")
+		resp := doRequest(t, env.srv, "GET", "/admin/users/00000000-0000-0000-0000-000000000000", token, "")
 		assertStatus(t, resp, http.StatusNotFound)
 		resp.Body.Close()
 	})
@@ -2279,7 +2279,7 @@ func TestAdminUpdateUser(t *testing.T) {
 
 		token := loginAsAdmin(t, env)
 
-		resp := doRequest(t, env.srv, "PUT", "/admin/users/does-not-exist", token,
+		resp := doRequest(t, env.srv, "PUT", "/admin/users/00000000-0000-0000-0000-000000000000", token,
 			`{"name":"Ghost"}`)
 		assertStatus(t, resp, http.StatusNotFound)
 		resp.Body.Close()
@@ -2372,7 +2372,7 @@ func TestAdminDeleteUser(t *testing.T) {
 
 		token := loginAsAdmin(t, env)
 
-		resp := doRequest(t, env.srv, "DELETE", "/admin/users/no-such-user", token, "")
+		resp := doRequest(t, env.srv, "DELETE", "/admin/users/00000000-0000-0000-0000-000000000000", token, "")
 		assertStatus(t, resp, http.StatusNotFound)
 		resp.Body.Close()
 	})
@@ -2515,7 +2515,7 @@ func TestAdminDeleteClient(t *testing.T) {
 
 		token := loginAsAdmin(t, env)
 
-		resp := doRequest(t, env.srv, "DELETE", "/admin/clients/no-such-client", token, "")
+		resp := doRequest(t, env.srv, "DELETE", "/admin/clients/00000000-0000-0000-0000-000000000000", token, "")
 		assertStatus(t, resp, http.StatusNotFound)
 		resp.Body.Close()
 	})
@@ -2872,7 +2872,7 @@ func TestContactManagement(t *testing.T) {
 		env := newTestEnv(t)
 		token := loginAsAdmin(t, env)
 
-		resp := doRequest(t, env.srv, "GET", "/admin/contacts/no-such-id", token, "")
+		resp := doRequest(t, env.srv, "GET", "/admin/contacts/00000000-0000-0000-0000-000000000000", token, "")
 		assertStatus(t, resp, http.StatusNotFound)
 		resp.Body.Close()
 	})
@@ -3381,7 +3381,7 @@ func TestCampaignManagement(t *testing.T) {
 		env := newTestEnv(t)
 		token := loginAsAdmin(t, env)
 
-		resp := doRequest(t, env.srv, "GET", "/admin/campaigns/no-such-id", token, "")
+		resp := doRequest(t, env.srv, "GET", "/admin/campaigns/00000000-0000-0000-0000-000000000000", token, "")
 		assertStatus(t, resp, http.StatusNotFound)
 		resp.Body.Close()
 	})
