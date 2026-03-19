@@ -190,8 +190,7 @@ func main() {
 				Slug string `json:"slug"`
 				Name string `json:"name"`
 			}
-			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-				iam.WriteError(w, http.StatusBadRequest, "invalid_request", "invalid JSON body")
+			if !iam.DecodeJSON(w, r, &req) {
 				return
 			}
 			if req.Slug == "" {
@@ -199,7 +198,7 @@ func main() {
 				return
 			}
 			if err := tenant.ValidateSlug(req.Slug); err != nil {
-				iam.WriteError(w, http.StatusBadRequest, "invalid_request", err.Error())
+				iam.WriteError(w, http.StatusBadRequest, "invalid_request", "invalid slug format")
 				return
 			}
 			if req.Name == "" {

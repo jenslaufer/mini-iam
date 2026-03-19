@@ -343,7 +343,7 @@ func TestUpdateContactNotFound(t *testing.T) {
 	env := newHandlerEnv(t)
 	tok := adminToken(t, env)
 
-	resp := doReq(t, env, "PUT", "/admin/contacts/nonexistent", tok,
+	resp := doReq(t, env, "PUT", "/admin/contacts/00000000-0000-0000-0000-000000000000", tok,
 		`{"name":"X","email":"x@example.com"}`)
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusNotFound {
