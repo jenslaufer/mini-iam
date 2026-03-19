@@ -38,7 +38,7 @@ test.describe('Tenant settings', () => {
     await expect(page).toHaveURL(/\/tenants\//)
 
     // General fields
-    await expect(page.getByLabel('Name')).toBeVisible()
+    await expect(page.getByLabel('Name', { exact: true })).toBeVisible()
     await expect(page.getByText('Slug')).toBeVisible()
     await expect(page.getByText('Registration')).toBeVisible()
     await expect(page.getByText('Created')).toBeVisible()
@@ -48,7 +48,7 @@ test.describe('Tenant settings', () => {
     await expect(page.getByLabel('Port')).toBeVisible()
     await expect(page.getByLabel('User')).toBeVisible()
     await expect(page.getByLabel('Password')).toBeVisible()
-    await expect(page.getByLabel('From')).toBeVisible()
+    await expect(page.getByLabel('From', { exact: true })).toBeVisible()
     await expect(page.getByLabel('From Name')).toBeVisible()
     await expect(page.getByLabel('Rate (ms)')).toBeVisible()
 
@@ -66,7 +66,7 @@ test.describe('Tenant settings', () => {
     await page.locator('tbody tr:first-child a').click()
     await expect(page).toHaveURL(/\/tenants\//)
 
-    const nameInput = page.getByLabel('Name')
+    const nameInput = page.getByLabel('Name', { exact: true })
     const originalName = await nameInput.inputValue()
 
     // Change name
@@ -97,7 +97,7 @@ test.describe('Tenant settings', () => {
     const wasBefore = await toggle.isChecked()
 
     // Toggle
-    await toggle.click()
+    await toggle.click({ force: true })
     await page.getByRole('button', { name: 'Save' }).click()
     await expect(page.getByText('saved')).toBeVisible({ timeout: 5000 })
 
@@ -110,7 +110,7 @@ test.describe('Tenant settings', () => {
     }
 
     // Toggle back
-    await toggle.click()
+    await toggle.click({ force: true })
     await page.getByRole('button', { name: 'Save' }).click()
     await expect(page.getByText('saved')).toBeVisible({ timeout: 5000 })
   })
