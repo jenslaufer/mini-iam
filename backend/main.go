@@ -148,7 +148,7 @@ func main() {
 	mux.HandleFunc("/admin/users", iamHandler.AdminListUsers)
 	mux.HandleFunc("/admin/users/", iamHandler.AdminUserByID)
 	mux.HandleFunc("/admin/clients", iamHandler.AdminListClients)
-	mux.HandleFunc("/admin/clients/", iamHandler.AdminDeleteClient)
+	mux.HandleFunc("/admin/clients/", iamHandler.AdminClientByID)
 
 	// Marketing routes (admin-protected)
 	mux.HandleFunc("/admin/contacts/import", marketingHandler.AdminImportContacts)

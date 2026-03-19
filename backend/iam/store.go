@@ -238,6 +238,26 @@ func (s *Store) ListClients() ([]Client, error) {
 	return clients, rows.Err()
 }
 
+func (s *Store) UpdateClient(id, name string, redirectURIs []string) (*Client, error) {
+	client, err := s.GetClient(id)
+	if err != nil {
+		return nil, err
+	}
+	if name != "" {
+		client.Name = name
+	}
+	if redirectURIs != nil {
+		client.RedirectURIs = redirectURIs
+	}
+	urisJSON, _ := json.Marshal(client.RedirectURIs)
+	_, err = s.db.Exec("UPDATE clients SET name = ?, redirect_uris = ? WHERE id = ? AND tenant_id = ?",
+		client.Name, string(urisJSON), client.ID, s.tenantID)
+	if err != nil {
+		return nil, err
+	}
+	return client, nil
+}
+
 func (s *Store) DeleteClient(id string) error {
 	result, err := s.db.Exec("DELETE FROM clients WHERE id = ? AND tenant_id = ?", id, s.tenantID)
 	if err != nil {
