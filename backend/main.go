@@ -221,7 +221,7 @@ func main() {
 	mux.HandleFunc("/admin/tenants/", exportImportHandler.ExportOrDelete)
 
 	// Wrap with tenant middleware (path prefix + X-Tenant header), then CORS
-	handler := CORSMiddleware(corsOrigins)(tenant.Middleware(tenantStore, defaultTenantID)(mux))
+	handler := SecurityHeadersMiddleware(CORSMiddleware(corsOrigins)(tenant.Middleware(tenantStore, defaultTenantID)(mux)))
 
 	log.Printf("launch-kit starting on :%s (issuer: %s)", port, issuer)
 	if err := http.ListenAndServe(":"+port, handler); err != nil {
