@@ -38,7 +38,7 @@ test.describe('Client editing', () => {
     await expect(nameInput).toHaveValue('Test Client')
 
     const urisTextarea = modal.locator('textarea')
-    await expect(urisTextarea).toContainText('http://localhost/cb')
+    await expect(urisTextarea).toHaveValue(/http:\/\/localhost\/cb/)
   })
 
   test('save client edit updates list', async ({ page }) => {

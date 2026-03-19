@@ -28,7 +28,7 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown))
         class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-sm"
         @click.self="close"
       >
-        <div class="bg-white rounded-2xl shadow-xl w-full max-w-md">
+        <div role="dialog" aria-modal="true" class="bg-white rounded-2xl shadow-xl w-full max-w-md">
           <div class="flex items-center justify-between px-6 py-4 border-b border-slate-200">
             <h2 class="text-base font-semibold text-slate-900">{{ title }}</h2>
             <button
