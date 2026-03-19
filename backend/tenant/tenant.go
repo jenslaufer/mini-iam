@@ -77,6 +77,18 @@ func scanTenant(row interface{ Scan(...interface{}) error }) (*Tenant, error) {
 	return t, nil
 }
 
+func (s *Store) UpdateName(id string, name string) error {
+	result, err := s.db.Exec("UPDATE tenants SET name = ? WHERE id = ?", name, id)
+	if err != nil {
+		return err
+	}
+	rows, _ := result.RowsAffected()
+	if rows == 0 {
+		return fmt.Errorf("tenant not found")
+	}
+	return nil
+}
+
 func (s *Store) UpdateRegistrationEnabled(id string, enabled bool) error {
 	_, err := s.db.Exec("UPDATE tenants SET registration_enabled = ? WHERE id = ?", enabled, id)
 	return err

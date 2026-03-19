@@ -320,6 +320,79 @@ func (h *ExportImportHandler) Import(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// --- Update tenant ---
+
+// updateTenantRequest is the JSON body for PUT /admin/tenants/{id}.
+type updateTenantRequest struct {
+	Name                *string          `json:"name,omitempty"`
+	RegistrationEnabled *bool            `json:"registration_enabled,omitempty"`
+	SMTP                *updateSMTPInput `json:"smtp,omitempty"`
+}
+
+type updateSMTPInput struct {
+	Host     string `json:"host"`
+	Port     string `json:"port"`
+	User     string `json:"user"`
+	Password string `json:"password"`
+	From     string `json:"from"`
+	FromName string `json:"from_name"`
+	RateMS   int    `json:"rate_ms"`
+}
+
+func (h *ExportImportHandler) handleUpdateTenant(w http.ResponseWriter, r *http.Request, id string) {
+	// Verify tenant exists first
+	_, err := h.tenantStore.GetByID(id)
+	if err != nil {
+		iam.WriteError(w, http.StatusNotFound, "not_found", "tenant not found")
+		return
+	}
+
+	var req updateTenantRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		iam.WriteError(w, http.StatusBadRequest, "invalid_request", "invalid JSON body")
+		return
+	}
+
+	if req.Name != nil {
+		if err := h.tenantStore.UpdateName(id, *req.Name); err != nil {
+			iam.WriteError(w, http.StatusInternalServerError, "server_error", err.Error())
+			return
+		}
+	}
+
+	if req.RegistrationEnabled != nil {
+		if err := h.tenantStore.UpdateRegistrationEnabled(id, *req.RegistrationEnabled); err != nil {
+			iam.WriteError(w, http.StatusInternalServerError, "server_error", err.Error())
+			return
+		}
+	}
+
+	if req.SMTP != nil {
+		smtp := SMTPConfig{
+			Host:     req.SMTP.Host,
+			Port:     req.SMTP.Port,
+			User:     req.SMTP.User,
+			Password: req.SMTP.Password,
+			From:     req.SMTP.From,
+			FromName: req.SMTP.FromName,
+			RateMS:   req.SMTP.RateMS,
+		}
+		if err := h.tenantStore.UpdateSMTP(id, smtp); err != nil {
+			iam.WriteError(w, http.StatusInternalServerError, "server_error", err.Error())
+			return
+		}
+	}
+
+	// Return updated tenant with sanitized password
+	t, err := h.tenantStore.GetByID(id)
+	if err != nil {
+		iam.WriteError(w, http.StatusInternalServerError, "server_error", err.Error())
+		return
+	}
+	t.SMTP.Password = ""
+	iam.WriteJSON(w, http.StatusOK, t)
+}
+
 // --- Batch import types ---
 
 type batchImportEntry struct {
@@ -551,6 +624,8 @@ func (h *ExportImportHandler) handleTenantByID(w http.ResponseWriter, r *http.Re
 		sanitized := *t
 		sanitized.SMTP.Password = ""
 		iam.WriteJSON(w, http.StatusOK, &sanitized)
+	case http.MethodPut:
+		h.handleUpdateTenant(w, r, id)
 	case http.MethodDelete:
 		if err := h.tenantStore.Delete(id); err != nil {
 			iam.WriteError(w, http.StatusNotFound, "not_found", "tenant not found")

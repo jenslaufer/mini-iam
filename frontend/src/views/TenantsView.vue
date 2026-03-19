@@ -143,7 +143,9 @@ async function remove(tenant) {
             :key="tenant.id"
             class="border-b border-slate-100 last:border-0 hover:bg-slate-50 transition-colors"
           >
-            <td class="px-4 py-3 text-slate-900 font-medium">{{ tenant.name }}</td>
+            <td class="px-4 py-3">
+              <router-link :to="`/tenants/${tenant.id}`" class="text-slate-900 font-medium hover:text-blue-600 transition-colors">{{ tenant.name }}</router-link>
+            </td>
             <td class="px-4 py-3">
               <code class="font-mono text-xs bg-slate-100 px-2 py-1 rounded text-slate-700">{{ tenant.slug }}</code>
             </td>
