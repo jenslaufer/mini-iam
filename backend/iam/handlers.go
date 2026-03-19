@@ -491,7 +491,7 @@ func (h *Handler) UserInfo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	claims, err := ts.ValidateAccessToken(tokenStr)
+	claims, err := ts.ValidateAccessToken(tokenStr, "")
 	if err != nil {
 		WriteError(w, http.StatusUnauthorized, "invalid_token", "invalid or expired token")
 		return
@@ -641,7 +641,7 @@ func CheckAdmin(registry *TokenRegistry, store *Store, platformTenantID string, 
 		return nil, false
 	}
 
-	claims, err := ts.ValidateAccessToken(tokenStr)
+	claims, err := ts.ValidateAccessToken(tokenStr, "")
 	if err != nil {
 		WriteError(w, http.StatusUnauthorized, "invalid_token", "invalid or expired token")
 		return nil, false
@@ -695,7 +695,7 @@ func CheckAdminCrossTenant(registry *TokenRegistry, store *Store, platformTenant
 		return nil, false
 	}
 
-	claims, err := ts.ValidateAccessToken(tokenStr)
+	claims, err := ts.ValidateAccessToken(tokenStr, "")
 	if err != nil {
 		WriteError(w, http.StatusUnauthorized, "invalid_token", "invalid or expired token")
 		return nil, false
@@ -758,7 +758,7 @@ func (h *Handler) requireAuth(w http.ResponseWriter, r *http.Request) (*User, bo
 		return nil, false
 	}
 
-	claims, err := ts.ValidateAccessToken(tokenStr)
+	claims, err := ts.ValidateAccessToken(tokenStr, "")
 	if err != nil {
 		WriteError(w, http.StatusUnauthorized, "invalid_token", "invalid or expired token")
 		return nil, false
@@ -885,7 +885,7 @@ func (h *Handler) AdminUserByID(w http.ResponseWriter, r *http.Request) {
 			WriteError(w, http.StatusInternalServerError, "server_error", "failed to load tenant keys")
 			return
 		}
-		claims, _ := ts.ValidateAccessToken(tokenStr)
+		claims, _ := ts.ValidateAccessToken(tokenStr, "")
 		adminID, _ := claims["sub"].(string)
 
 		if id == adminID {

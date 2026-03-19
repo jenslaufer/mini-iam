@@ -61,10 +61,18 @@ func (ts *TokenService) CreateIDToken(user *User, audience, nonce string, tenant
 	return token.SignedString(ts.privateKey)
 }
 
-func (ts *TokenService) ValidateAccessToken(tokenString string) (jwt.MapClaims, error) {
+func (ts *TokenService) ValidateAccessToken(tokenString string, expectedAudience string) (jwt.MapClaims, error) {
+	opts := []jwt.ParserOption{
+		jwt.WithValidMethods([]string{"RS256"}),
+		jwt.WithIssuer(ts.issuer),
+	}
+	if expectedAudience != "" {
+		opts = append(opts, jwt.WithAudience(expectedAudience))
+	}
+
 	token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
 		return &ts.privateKey.PublicKey, nil
-	}, jwt.WithValidMethods([]string{"RS256"}), jwt.WithIssuer(ts.issuer))
+	}, opts...)
 	if err != nil {
 		return nil, err
 	}
