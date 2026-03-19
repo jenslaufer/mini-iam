@@ -35,7 +35,7 @@ func TestValidateAccessToken(t *testing.T) {
 	user := &User{ID: "u1", Email: "test@example.com", Name: "Test", Role: "admin"}
 
 	token, _ := ts.CreateAccessToken(user, "aud", "")
-	claims, err := ts.ValidateAccessToken(token)
+	claims, err := ts.ValidateAccessToken(token, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -56,7 +56,7 @@ func TestValidateAccessToken(t *testing.T) {
 func TestValidateAccessTokenInvalid(t *testing.T) {
 	ts := newTestTokenService(t)
 
-	_, err := ts.ValidateAccessToken("invalid.token.string")
+	_, err := ts.ValidateAccessToken("invalid.token.string", "")
 	if err == nil {
 		t.Error("expected error for invalid token")
 	}
@@ -69,7 +69,7 @@ func TestValidateAccessTokenWrongKey(t *testing.T) {
 	user := &User{ID: "u1", Email: "test@example.com", Name: "Test", Role: "user"}
 	token, _ := ts1.CreateAccessToken(user, "aud", "")
 
-	_, err := ts2.ValidateAccessToken(token)
+	_, err := ts2.ValidateAccessToken(token, "")
 	if err == nil {
 		t.Error("expected error for token signed with different key")
 	}
@@ -87,7 +87,7 @@ func TestCreateIDToken(t *testing.T) {
 		t.Error("token is empty")
 	}
 
-	claims, _ := ts.ValidateAccessToken(token)
+	claims, _ := ts.ValidateAccessToken(token, "")
 	if claims["nonce"] != "nonce123" {
 		t.Errorf("nonce = %v", claims["nonce"])
 	}
@@ -98,7 +98,7 @@ func TestCreateIDTokenWithoutNonce(t *testing.T) {
 	user := &User{ID: "u1", Email: "test@example.com", Name: "Test", Role: "user"}
 
 	token, _ := ts.CreateIDToken(user, "aud", "", "")
-	claims, _ := ts.ValidateAccessToken(token)
+	claims, _ := ts.ValidateAccessToken(token, "")
 	if _, ok := claims["nonce"]; ok {
 		t.Error("nonce should not be present when empty")
 	}
@@ -167,6 +167,60 @@ func TestVerifyPKCEUnsupportedMethod(t *testing.T) {
 	}
 }
 
+// --- M-2: Audience (aud) claim validation ---
+
+func TestAccessTokenContainsAudClaim(t *testing.T) {
+	ts := newTestTokenService(t)
+	user := &User{ID: "u1", Email: "test@example.com", Name: "Test", Role: "user"}
+
+	token, err := ts.CreateAccessToken(user, "my-client-id", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	claims, err := ts.ValidateAccessToken(token, "my-client-id")
+	if err != nil {
+		t.Fatal(err)
+	}
+	aud, ok := claims["aud"].(string)
+	if !ok || aud != "my-client-id" {
+		t.Errorf("aud = %v, want my-client-id", claims["aud"])
+	}
+}
+
+func TestValidateAccessTokenAudienceMatch(t *testing.T) {
+	ts := newTestTokenService(t)
+	user := &User{ID: "u1", Email: "test@example.com", Name: "Test", Role: "user"}
+
+	token, _ := ts.CreateAccessToken(user, "client-a", "")
+	_, err := ts.ValidateAccessToken(token, "client-a")
+	if err != nil {
+		t.Errorf("expected valid token, got error: %v", err)
+	}
+}
+
+func TestValidateAccessTokenAudienceMismatch(t *testing.T) {
+	ts := newTestTokenService(t)
+	user := &User{ID: "u1", Email: "test@example.com", Name: "Test", Role: "user"}
+
+	token, _ := ts.CreateAccessToken(user, "client-a", "")
+	_, err := ts.ValidateAccessToken(token, "client-b")
+	if err == nil {
+		t.Error("expected error: token audience client-a should not match expected client-b")
+	}
+}
+
+func TestValidateAccessTokenEmptyAudienceSkipsCheck(t *testing.T) {
+	ts := newTestTokenService(t)
+	user := &User{ID: "u1", Email: "test@example.com", Name: "Test", Role: "user"}
+
+	token, _ := ts.CreateAccessToken(user, "any-client", "")
+	_, err := ts.ValidateAccessToken(token, "")
+	if err != nil {
+		t.Errorf("empty expectedAudience should skip aud check, got error: %v", err)
+	}
+}
+
 // --- M-1: Issuer validation ---
 
 func TestValidateAccessTokenWrongIssuer(t *testing.T) {
@@ -177,7 +231,7 @@ func TestValidateAccessTokenWrongIssuer(t *testing.T) {
 	user := &User{ID: "u1", Email: "test@example.com", Name: "Test", Role: "user"}
 	token, _ := tsA.CreateAccessToken(user, "aud", "")
 
-	_, err := tsB.ValidateAccessToken(token)
+	_, err := tsB.ValidateAccessToken(token, "")
 	if err == nil {
 		t.Error("expected error: token issuer doesn't match validator issuer")
 	}

@@ -130,7 +130,7 @@ func TestToken_SignedByTenantA_InvalidWithTenantBKey(t *testing.T) {
 	}
 
 	// Validating tenant-a's token with tenant-b's service must fail
-	_, err = tokensB.ValidateAccessToken(tokenStr)
+	_, err = tokensB.ValidateAccessToken(tokenStr, "")
 	if err == nil {
 		t.Fatal("expected validation failure: token signed by tenant-a should not validate with tenant-b key")
 	}
@@ -148,7 +148,7 @@ func TestToken_TenantIDEmbeddedInClaims(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	claims, err := tokens.ValidateAccessToken(tokenStr)
+	claims, err := tokens.ValidateAccessToken(tokenStr, "")
 	if err != nil {
 		t.Fatalf("ValidateAccessToken: %v", err)
 	}
