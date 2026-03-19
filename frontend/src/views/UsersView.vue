@@ -120,7 +120,7 @@ async function remove(user) {
     </div>
 
     <!-- Table -->
-    <div class="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
+    <div class="bg-white rounded-xl shadow-sm border border-slate-200">
       <table class="w-full text-sm">
         <thead>
           <tr class="border-b border-slate-200 bg-slate-50">
@@ -186,7 +186,10 @@ async function remove(user) {
                   </button>
                   <div
                     v-if="openDropdown === user.id"
-                    class="absolute right-0 mt-1 w-28 bg-white border border-slate-200 rounded-lg shadow-md z-10 overflow-hidden"
+                    :class="[
+                      'absolute right-0 w-28 bg-white border border-slate-200 rounded-lg shadow-md z-10 overflow-hidden',
+                      user === filtered[filtered.length - 1] ? 'bottom-full mb-1' : 'mt-1',
+                    ]"
                   >
                     <button
                       v-for="role in ['user', 'admin']"

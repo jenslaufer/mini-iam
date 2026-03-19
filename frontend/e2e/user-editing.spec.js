@@ -32,7 +32,7 @@ test.describe('User name editing', () => {
     await input.press('Enter')
 
     // Toast shows success
-    await expect(page.locator('text=Name updated')).toBeVisible({ timeout: 5000 })
+    await expect(page.locator('text=Name updated').first()).toBeVisible({ timeout: 5000 })
 
     // Name in the list updates
     await expect(nameCell).toContainText('Edited Name')
@@ -42,7 +42,7 @@ test.describe('User name editing', () => {
     const restoreInput = nameCell.locator('input')
     await restoreInput.fill('Original Name')
     await restoreInput.press('Enter')
-    await expect(page.locator('text=Name updated')).toBeVisible({ timeout: 5000 })
+    await expect(page.locator('text=Name updated').first()).toBeVisible({ timeout: 5000 })
   })
 
   test('inline edit cancel with Escape', async ({ page }) => {
