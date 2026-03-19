@@ -220,6 +220,88 @@ func (s *Store) ListContactsWithSegments() ([]Contact, error) {
 	return contacts, nil
 }
 
+// CreateContactFull inserts a contact with all fields preserved (for migration import).
+func (s *Store) CreateContactFull(email, name, consentSource string, unsubscribed bool, consentAt, createdAt time.Time, inviteToken *string) (*Contact, error) {
+	c := &Contact{
+		ID:               uuid.NewString(),
+		TenantID:         s.tenantID,
+		Email:            email,
+		Name:             name,
+		Unsubscribed:     unsubscribed,
+		UnsubscribeToken: uuid.NewString(),
+		InviteToken:      inviteToken,
+		ConsentSource:    consentSource,
+		ConsentAt:        consentAt,
+		CreatedAt:        createdAt,
+	}
+	_, err := s.db.Exec(
+		`INSERT INTO contacts (id, tenant_id, email, name, unsubscribed, unsubscribe_token, invite_token, consent_source, consent_at, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		c.ID, c.TenantID, c.Email, c.Name, c.Unsubscribed, c.UnsubscribeToken, c.InviteToken, c.ConsentSource, c.ConsentAt, c.CreatedAt,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return c, nil
+}
+
+// CreateCampaignFull inserts a campaign with status and timestamps preserved (for migration import).
+func (s *Store) CreateCampaignFull(subject, htmlBody, fromName, fromEmail, status string, sentAt *time.Time, createdAt time.Time, segmentIDs []string) (*Campaign, error) {
+	c := &Campaign{
+		ID:        uuid.NewString(),
+		TenantID:  s.tenantID,
+		Subject:   subject,
+		HTMLBody:  htmlBody,
+		FromName:  fromName,
+		FromEmail: fromEmail,
+		Status:    status,
+		SentAt:    sentAt,
+		CreatedAt: createdAt,
+	}
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+
+	_, err = tx.Exec(
+		`INSERT INTO campaigns (id, tenant_id, subject, html_body, from_name, from_email, status, sent_at, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		c.ID, c.TenantID, c.Subject, c.HTMLBody, c.FromName, c.FromEmail, c.Status, c.SentAt, c.CreatedAt,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	for _, segID := range segmentIDs {
+		_, err = tx.Exec(
+			"INSERT INTO campaign_segments (campaign_id, segment_id) VALUES (?, ?)",
+			c.ID, segID,
+		)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+
+	c.SegmentIDs = segmentIDs
+	return c, nil
+}
+
+// CreateCampaignRecipient inserts a campaign recipient record (for migration import).
+func (s *Store) CreateCampaignRecipient(campaignID, contactID, status, errorMessage string, sentAt, openedAt *time.Time) error {
+	_, err := s.db.Exec(
+		`INSERT OR IGNORE INTO campaign_recipients (id, campaign_id, contact_id, status, error_message, sent_at, opened_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		uuid.NewString(), campaignID, contactID, status, errorMessage, sentAt, openedAt,
+	)
+	return err
+}
+
 // --- Segments ---
 
 func (s *Store) CreateSegment(name, description string) (*Segment, error) {

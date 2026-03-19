@@ -173,6 +173,45 @@ func (s *Store) ListUsers() ([]User, error) {
 	return users, rows.Err()
 }
 
+// ExportUsers returns all users including password_hash for migration export.
+func (s *Store) ExportUsers() ([]User, error) {
+	rows, err := s.db.Query("SELECT id, tenant_id, email, password_hash, name, role, created_at FROM users WHERE tenant_id = ? ORDER BY created_at ASC", s.tenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var users []User
+	for rows.Next() {
+		var u User
+		if err := rows.Scan(&u.ID, &u.TenantID, &u.Email, &u.PasswordHash, &u.Name, &u.Role, &u.CreatedAt); err != nil {
+			return nil, err
+		}
+		users = append(users, u)
+	}
+	return users, rows.Err()
+}
+
+// CreateUserWithHash inserts a user with a pre-hashed password (for migration import).
+func (s *Store) CreateUserWithHash(email, hash, name, role string) (*User, error) {
+	u := &User{
+		ID:           uuid.NewString(),
+		TenantID:     s.tenantID,
+		Email:        email,
+		PasswordHash: hash,
+		Name:         name,
+		Role:         role,
+		CreatedAt:    time.Now().UTC(),
+	}
+	_, err := s.db.Exec(
+		"INSERT INTO users (id, tenant_id, email, password_hash, name, role, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+		u.ID, u.TenantID, u.Email, u.PasswordHash, u.Name, u.Role, u.CreatedAt,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return u, nil
+}
+
 func (s *Store) UpdateUser(id string, name, role string) (*User, error) {
 	user, err := s.GetUserByID(id)
 	if err != nil {
@@ -236,6 +275,47 @@ func (s *Store) ListClients() ([]Client, error) {
 		clients = append(clients, c)
 	}
 	return clients, rows.Err()
+}
+
+// ExportClients returns all clients including secret_hash for migration export.
+func (s *Store) ExportClients() ([]Client, error) {
+	rows, err := s.db.Query("SELECT id, tenant_id, secret_hash, name, redirect_uris, created_at FROM clients WHERE tenant_id = ? ORDER BY created_at ASC", s.tenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var clients []Client
+	for rows.Next() {
+		var c Client
+		var urisJSON string
+		if err := rows.Scan(&c.ID, &c.TenantID, &c.SecretHash, &c.Name, &urisJSON, &c.CreatedAt); err != nil {
+			return nil, err
+		}
+		json.Unmarshal([]byte(urisJSON), &c.RedirectURIs)
+		clients = append(clients, c)
+	}
+	return clients, rows.Err()
+}
+
+// CreateClientWithID inserts a client with a specific ID and pre-hashed secret (for migration import).
+func (s *Store) CreateClientWithID(id, secretHash, name string, redirectURIs []string) (*Client, error) {
+	urisJSON, _ := json.Marshal(redirectURIs)
+	c := &Client{
+		ID:           id,
+		TenantID:     s.tenantID,
+		SecretHash:   secretHash,
+		Name:         name,
+		RedirectURIs: redirectURIs,
+		CreatedAt:    time.Now().UTC(),
+	}
+	_, err := s.db.Exec(
+		"INSERT INTO clients (id, tenant_id, secret_hash, name, redirect_uris, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+		c.ID, c.TenantID, c.SecretHash, c.Name, string(urisJSON), c.CreatedAt,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return c, nil
 }
 
 func (s *Store) DeleteClient(id string) error {
