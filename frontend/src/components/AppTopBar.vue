@@ -21,6 +21,7 @@ const pageTitle = computed(() => {
     '/campaigns': 'Campaigns',
     '/tenants': 'Tenants',
   }
+  if (route.path.startsWith('/tenants/')) return 'Tenant Settings'
   return map[route.path] || 'Admin'
 })
 
