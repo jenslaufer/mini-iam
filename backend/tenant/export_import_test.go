@@ -196,6 +196,19 @@ func doExport(t *testing.T, env *exportEnv, tenantID, token string) *http.Respon
 	return resp
 }
 
+// doMigrationExport calls GET /admin/tenants/{id}/export?mode=migration.
+func doMigrationExport(t *testing.T, env *exportEnv, tenantID, token string) *http.Response {
+	t.Helper()
+	req, _ := http.NewRequest(http.MethodGet,
+		env.srv.URL+"/admin/tenants/"+tenantID+"/export?mode=migration", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("migration export request: %v", err)
+	}
+	return resp
+}
+
 // doImport calls POST /admin/tenants/import with an admin Bearer token.
 func doImport(t *testing.T, env *exportEnv, payload TenantExport, token string) *http.Response {
 	t.Helper()
@@ -1900,5 +1913,429 @@ func TestBatchImport_RequiresAuth(t *testing.T) {
 	if resp.StatusCode != http.StatusUnauthorized {
 		raw, _ := io.ReadAll(resp.Body)
 		t.Errorf("expected 401 without auth, got %d: %s", resp.StatusCode, raw)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Migration mode tests
+// ---------------------------------------------------------------------------
+
+// seedMigrationTenant creates a tenant with full data including sent campaigns
+// and recipients, suitable for testing migration export.
+func seedMigrationTenant(t *testing.T, env *exportEnv, slug string) (*tenant.Tenant, string) {
+	t.Helper()
+	tn, err := env.tenantStore.CreateWithSMTP(slug, slug+" App", tenant.SMTPConfig{
+		Host:     "smtp.example.com",
+		Port:     "587",
+		User:     "mail@example.com",
+		Password: "smtp-secret",
+		From:     "noreply@example.com",
+		FromName: "App",
+		RateMS:   100,
+	})
+	if err != nil {
+		t.Fatalf("create tenant: %v", err)
+	}
+
+	iamScoped := env.iamStore.ForTenant(tn.ID)
+	mktScoped := env.mktStore.ForTenant(tn.ID)
+
+	// Admin + member user
+	if err := iamScoped.SeedAdmin("admin@mig.com", "migpass1", "Admin"); err != nil {
+		t.Fatalf("SeedAdmin: %v", err)
+	}
+	member, err := iamScoped.CreateUser("member@mig.com", "memberpass1", "Member")
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	if _, err := iamScoped.UpdateUser(member.ID, "", "member"); err != nil {
+		t.Fatalf("UpdateUser: %v", err)
+	}
+
+	// Client
+	_, _, err = iamScoped.CreateClient("Migration SPA", []string{"https://app.mig.com/cb"})
+	if err != nil {
+		t.Fatalf("CreateClient: %v", err)
+	}
+
+	// Segment
+	seg, err := mktScoped.CreateSegment("newsletter", "Main list")
+	if err != nil {
+		t.Fatalf("CreateSegment: %v", err)
+	}
+
+	// Contact
+	contact, err := mktScoped.CreateContact("alice@mig.com", "Alice", "api")
+	if err != nil {
+		t.Fatalf("CreateContact: %v", err)
+	}
+	if err := mktScoped.AddContactToSegment(contact.ID, seg.ID); err != nil {
+		t.Fatalf("AddContactToSegment: %v", err)
+	}
+
+	// Sent campaign with recipients
+	campaign, err := mktScoped.CreateCampaign(
+		"Welcome", "<h1>Hi</h1>", "App", "hi@mig.com",
+		[]string{seg.ID},
+	)
+	if err != nil {
+		t.Fatalf("CreateCampaign: %v", err)
+	}
+	if _, err := mktScoped.PrepareCampaignRecipients(campaign.ID); err != nil {
+		t.Fatalf("PrepareCampaignRecipients: %v", err)
+	}
+	if err := mktScoped.SetCampaignStatus(campaign.ID, "sent"); err != nil {
+		t.Fatalf("SetCampaignStatus: %v", err)
+	}
+	// Mark recipients as sent
+	recipients, _ := mktScoped.GetCampaignRecipients(campaign.ID)
+	for _, r := range recipients {
+		mktScoped.UpdateRecipientStatus(r.ID, "sent", "")
+	}
+
+	// Also add a draft campaign
+	_, err = mktScoped.CreateCampaign(
+		"Draft Campaign", "<p>Draft</p>", "App", "hi@mig.com",
+		[]string{seg.ID},
+	)
+	if err != nil {
+		t.Fatalf("CreateCampaign draft: %v", err)
+	}
+
+	tok := adminToken(t, env, tn.ID, "admin@mig.com", "migpass1")
+	return tn, tok
+}
+
+func TestMigrationExportIncludesAllData(t *testing.T) {
+	env := newExportEnv(t)
+	tn, tok := seedMigrationTenant(t, env, "mig-export-all")
+
+	resp := doMigrationExport(t, env, tn.ID, tok)
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 200, got %d: %s", resp.StatusCode, raw)
+	}
+
+	var raw map[string]interface{}
+	rawBody, _ := io.ReadAll(resp.Body)
+	if err := json.Unmarshal(rawBody, &raw); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	// Users should have password_hash
+	usersRaw := raw["users"].([]interface{})
+	if len(usersRaw) < 2 {
+		t.Fatalf("expected >=2 users, got %d", len(usersRaw))
+	}
+	for _, u := range usersRaw {
+		entry := u.(map[string]interface{})
+		if _, ok := entry["password_hash"]; !ok {
+			t.Errorf("user %v missing password_hash in migration export", entry["email"])
+		}
+		hash := entry["password_hash"].(string)
+		if !strings.HasPrefix(hash, "$2") {
+			t.Errorf("password_hash for %v doesn't look like bcrypt: %q", entry["email"], hash)
+		}
+	}
+
+	// Clients should have client_id and secret_hash
+	clientsRaw := raw["clients"].([]interface{})
+	if len(clientsRaw) < 1 {
+		t.Fatal("expected at least 1 client")
+	}
+	for _, c := range clientsRaw {
+		entry := c.(map[string]interface{})
+		if _, ok := entry["client_id"]; !ok {
+			t.Error("client missing client_id in migration export")
+		}
+		if _, ok := entry["secret_hash"]; !ok {
+			t.Error("client missing secret_hash in migration export")
+		}
+	}
+
+	// SMTP should have password
+	smtpRaw := raw["smtp"].(map[string]interface{})
+	if _, ok := smtpRaw["smtp_password"]; !ok {
+		t.Error("SMTP missing password in migration export")
+	}
+	if smtpRaw["smtp_password"] != "smtp-secret" {
+		t.Errorf("SMTP password = %v, want smtp-secret", smtpRaw["smtp_password"])
+	}
+
+	// Contacts should have migration fields
+	contactsRaw := raw["contacts"].([]interface{})
+	if len(contactsRaw) < 1 {
+		t.Fatal("expected at least 1 contact")
+	}
+	for _, c := range contactsRaw {
+		entry := c.(map[string]interface{})
+		if _, ok := entry["consent_at"]; !ok {
+			t.Error("contact missing consent_at in migration export")
+		}
+		if _, ok := entry["created_at"]; !ok {
+			t.Error("contact missing created_at in migration export")
+		}
+		if _, ok := entry["unsubscribed"]; !ok {
+			t.Error("contact missing unsubscribed in migration export")
+		}
+	}
+
+	// Should include ALL campaigns (not just drafts)
+	campaignsRaw := raw["campaigns"].([]interface{})
+	if len(campaignsRaw) < 2 {
+		t.Fatalf("expected >=2 campaigns (sent + draft), got %d", len(campaignsRaw))
+	}
+	hasSent := false
+	for _, c := range campaignsRaw {
+		entry := c.(map[string]interface{})
+		if _, ok := entry["status"]; !ok {
+			t.Error("campaign missing status in migration export")
+		}
+		if _, ok := entry["created_at"]; !ok {
+			t.Error("campaign missing created_at in migration export")
+		}
+		if entry["status"] == "sent" {
+			hasSent = true
+			if _, ok := entry["sent_at"]; !ok {
+				t.Error("sent campaign missing sent_at in migration export")
+			}
+			// Should have recipients
+			if _, ok := entry["recipients"]; !ok {
+				t.Error("sent campaign missing recipients in migration export")
+			}
+		}
+	}
+	if !hasSent {
+		t.Error("migration export missing sent campaign")
+	}
+}
+
+func TestSeedExportUnchanged(t *testing.T) {
+	env := newExportEnv(t)
+	tn, tok := seedMigrationTenant(t, env, "seed-unchanged")
+
+	resp := doExport(t, env, tn.ID, tok)
+	defer resp.Body.Close()
+
+	var raw map[string]interface{}
+	rawBody, _ := io.ReadAll(resp.Body)
+	json.Unmarshal(rawBody, &raw)
+
+	// Users should NOT have password_hash
+	if usersRaw, ok := raw["users"]; ok {
+		for _, u := range usersRaw.([]interface{}) {
+			entry := u.(map[string]interface{})
+			if _, ok := entry["password_hash"]; ok {
+				t.Error("seed export should not include password_hash")
+			}
+		}
+	}
+
+	// Clients should NOT have secret_hash or client_id
+	if clientsRaw, ok := raw["clients"]; ok {
+		for _, c := range clientsRaw.([]interface{}) {
+			entry := c.(map[string]interface{})
+			if _, ok := entry["secret_hash"]; ok {
+				t.Error("seed export should not include secret_hash")
+			}
+			if _, ok := entry["client_id"]; ok {
+				t.Error("seed export should not include client_id")
+			}
+		}
+	}
+
+	// SMTP should NOT have password
+	if smtpRaw, ok := raw["smtp"]; ok {
+		entry := smtpRaw.(map[string]interface{})
+		if _, ok := entry["smtp_password"]; ok {
+			t.Error("seed export should not include smtp_password")
+		}
+	}
+
+	// Contacts should NOT have migration-only fields
+	if contactsRaw, ok := raw["contacts"]; ok {
+		for _, c := range contactsRaw.([]interface{}) {
+			entry := c.(map[string]interface{})
+			if _, ok := entry["unsubscribed"]; ok {
+				t.Error("seed export should not include unsubscribed")
+			}
+			if _, ok := entry["consent_at"]; ok {
+				t.Error("seed export should not include consent_at")
+			}
+		}
+	}
+
+	// Should only have draft campaigns
+	if campaignsRaw, ok := raw["campaigns"]; ok {
+		for _, c := range campaignsRaw.([]interface{}) {
+			entry := c.(map[string]interface{})
+			if _, ok := entry["status"]; ok {
+				t.Error("seed export should not include status field")
+			}
+			if _, ok := entry["recipients"]; ok {
+				t.Error("seed export should not include recipients")
+			}
+		}
+	}
+}
+
+func TestImportBackwardCompatible(t *testing.T) {
+	// Existing seed JSON format must still work without migration fields.
+	db := newRoutingDB(t)
+	tenantStore := tenant.NewStore(db)
+	iamStore := iam.NewStore(db)
+	mktStore := marketing.NewStore(db)
+
+	cfg := tenant.ImportConfig{
+		Slug: "backward-compat",
+		Name: "Backward Compat",
+		Admin: &tenant.AdminConfig{
+			Email:    "admin@compat.com",
+			Password: "compatpass1",
+		},
+		Clients: []tenant.ClientConfig{
+			{Name: "SPA", RedirectURIs: []string{"https://compat.com/cb"}},
+		},
+		Segments: []tenant.SegmentConfig{
+			{Name: "users", Description: "All users"},
+		},
+		Contacts: []tenant.ContactConfig{
+			{Email: "user@compat.com", Name: "User", Segments: []string{"users"}, ConsentSource: "api"},
+		},
+		Campaigns: []tenant.CampaignConfig{
+			{Subject: "Hi", HTMLBody: "<p>Hi</p>", FromName: "App", FromEmail: "app@compat.com", Segments: []string{"users"}},
+		},
+	}
+
+	result, err := tenant.ImportTenantConfig(tenantStore, iamStore, mktStore, cfg)
+	if err != nil {
+		t.Fatalf("ImportTenantConfig: %v", err)
+	}
+	if result.TenantID == "" {
+		t.Fatal("result.TenantID is empty")
+	}
+	if len(result.Clients) != 1 {
+		t.Fatalf("expected 1 client, got %d", len(result.Clients))
+	}
+	if result.Clients[0].ClientSecret == "" {
+		t.Error("seed import should generate client secret")
+	}
+
+	// Verify admin can authenticate
+	scopedIAM := iamStore.ForTenant(result.TenantID)
+	user, err := scopedIAM.AuthenticateUser("admin@compat.com", "compatpass1")
+	if err != nil {
+		t.Fatalf("admin cannot authenticate: %v", err)
+	}
+	if user.Role != "admin" {
+		t.Errorf("role = %q, want admin", user.Role)
+	}
+
+	// Verify campaign is draft
+	scopedMkt := mktStore.ForTenant(result.TenantID)
+	campaigns, _ := scopedMkt.ListCampaigns()
+	if len(campaigns) != 1 {
+		t.Fatalf("expected 1 campaign, got %d", len(campaigns))
+	}
+	if campaigns[0].Status != "draft" {
+		t.Errorf("campaign status = %q, want draft", campaigns[0].Status)
+	}
+}
+
+func TestMigrationRoundTrip(t *testing.T) {
+	env := newExportEnv(t)
+	tn, tok := seedMigrationTenant(t, env, "mig-roundtrip")
+
+	// Export with migration mode
+	resp1 := doMigrationExport(t, env, tn.ID, tok)
+	defer resp1.Body.Close()
+
+	if resp1.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(resp1.Body)
+		t.Fatalf("first export: expected 200, got %d: %s", resp1.StatusCode, raw)
+	}
+
+	var export1 map[string]interface{}
+	body1, _ := io.ReadAll(resp1.Body)
+	json.Unmarshal(body1, &export1)
+
+	// Delete the tenant
+	if err := env.tenantStore.Delete(tn.ID); err != nil {
+		t.Fatalf("Delete tenant: %v", err)
+	}
+
+	// Import the exported data (use raw JSON as import payload)
+	var importCfg tenant.ImportConfig
+	if err := json.Unmarshal(body1, &importCfg); err != nil {
+		t.Fatalf("unmarshal import config: %v", err)
+	}
+
+	result, err := tenant.ImportTenantConfig(env.tenantStore, env.iamStore, env.mktStore, importCfg)
+	if err != nil {
+		t.Fatalf("ImportTenantConfig: %v", err)
+	}
+
+	// Get a new admin token for the re-imported tenant
+	tok2 := adminToken(t, env, result.TenantID, "admin@mig.com", "migpass1")
+
+	// Export again with migration mode
+	resp2 := doMigrationExport(t, env, result.TenantID, tok2)
+	defer resp2.Body.Close()
+
+	if resp2.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(resp2.Body)
+		t.Fatalf("second export: expected 200, got %d: %s", resp2.StatusCode, raw)
+	}
+
+	var export2 map[string]interface{}
+	body2, _ := io.ReadAll(resp2.Body)
+	json.Unmarshal(body2, &export2)
+
+	// Compare key fields (ignoring internal IDs and timestamps that differ)
+	if export2["slug"] != export1["slug"] {
+		t.Errorf("slug mismatch: %v vs %v", export2["slug"], export1["slug"])
+	}
+	if export2["name"] != export1["name"] {
+		t.Errorf("name mismatch: %v vs %v", export2["name"], export1["name"])
+	}
+
+	// Compare user count and emails
+	users1 := export1["users"].([]interface{})
+	users2 := export2["users"].([]interface{})
+	if len(users1) != len(users2) {
+		t.Errorf("user count: %d vs %d", len(users1), len(users2))
+	}
+
+	// Compare campaign count
+	camps1 := export1["campaigns"].([]interface{})
+	camps2 := export2["campaigns"].([]interface{})
+	if len(camps1) != len(camps2) {
+		t.Errorf("campaign count: %d vs %d", len(camps1), len(camps2))
+	}
+
+	// Verify password hashes survived round-trip
+	hashMap1 := map[string]string{}
+	for _, u := range users1 {
+		entry := u.(map[string]interface{})
+		hashMap1[entry["email"].(string)] = entry["password_hash"].(string)
+	}
+	for _, u := range users2 {
+		entry := u.(map[string]interface{})
+		email := entry["email"].(string)
+		hash2 := entry["password_hash"].(string)
+		if hash1, ok := hashMap1[email]; ok {
+			if hash1 != hash2 {
+				t.Errorf("password_hash changed for %s after round-trip", email)
+			}
+		}
+	}
+
+	// Verify SMTP password survived
+	smtp1 := export1["smtp"].(map[string]interface{})
+	smtp2 := export2["smtp"].(map[string]interface{})
+	if smtp1["smtp_password"] != smtp2["smtp_password"] {
+		t.Errorf("SMTP password changed: %v vs %v", smtp1["smtp_password"], smtp2["smtp_password"])
 	}
 }

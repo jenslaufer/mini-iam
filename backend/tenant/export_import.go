@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/jenslaufer/launch-kit/iam"
 	"github.com/jenslaufer/launch-kit/marketing"
@@ -32,13 +33,16 @@ type AdminConfig struct {
 }
 
 type UserConfig struct {
-	Email    string `json:"email"`
-	Password string `json:"password,omitempty"`
-	Name     string `json:"name"`
-	Role     string `json:"role"`
+	Email        string `json:"email"`
+	Password     string `json:"password,omitempty"`
+	PasswordHash string `json:"password_hash,omitempty"`
+	Name         string `json:"name"`
+	Role         string `json:"role"`
 }
 
 type ClientConfig struct {
+	ClientID     string   `json:"client_id,omitempty"`
+	SecretHash   string   `json:"secret_hash,omitempty"`
 	Name         string   `json:"name"`
 	RedirectURIs []string `json:"redirect_uris"`
 }
@@ -49,18 +53,34 @@ type SegmentConfig struct {
 }
 
 type ContactConfig struct {
-	Email         string   `json:"email"`
-	Name          string   `json:"name"`
-	Segments      []string `json:"segments,omitempty"`
-	ConsentSource string   `json:"consent_source"`
+	Email         string     `json:"email"`
+	Name          string     `json:"name"`
+	Segments      []string   `json:"segments,omitempty"`
+	ConsentSource string     `json:"consent_source"`
+	Unsubscribed  *bool      `json:"unsubscribed,omitempty"`
+	ConsentAt     *time.Time `json:"consent_at,omitempty"`
+	CreatedAt     *time.Time `json:"created_at,omitempty"`
+	InviteToken   *string    `json:"invite_token,omitempty"`
 }
 
 type CampaignConfig struct {
-	Subject   string   `json:"subject"`
-	HTMLBody  string   `json:"html_body"`
-	FromName  string   `json:"from_name"`
-	FromEmail string   `json:"from_email"`
-	Segments  []string `json:"segments,omitempty"`
+	Subject    string                  `json:"subject"`
+	HTMLBody   string                  `json:"html_body"`
+	FromName   string                  `json:"from_name"`
+	FromEmail  string                  `json:"from_email"`
+	Segments   []string                `json:"segments,omitempty"`
+	Status     string                  `json:"status,omitempty"`
+	SentAt     *time.Time              `json:"sent_at,omitempty"`
+	CreatedAt  *time.Time              `json:"created_at,omitempty"`
+	Recipients []CampaignRecipientConfig `json:"recipients,omitempty"`
+}
+
+type CampaignRecipientConfig struct {
+	ContactEmail string     `json:"contact_email"`
+	Status       string     `json:"status"`
+	ErrorMessage string     `json:"error_message,omitempty"`
+	SentAt       *time.Time `json:"sent_at,omitempty"`
+	OpenedAt     *time.Time `json:"opened_at,omitempty"`
 }
 
 type ImportResult struct {
@@ -132,7 +152,12 @@ func ImportTenantConfig(tenantStore *Store, iamStore *iam.Store, mktStore *marke
 	}
 
 	for _, u := range users {
-		if u.Role == "admin" {
+		if u.PasswordHash != "" {
+			// Migration mode: insert with pre-hashed password.
+			if _, err := scopedIAM.CreateUserWithHash(u.Email, u.PasswordHash, u.Name, u.Role); err != nil {
+				return nil, err
+			}
+		} else if u.Role == "admin" {
 			if err := scopedIAM.SeedAdmin(u.Email, u.Password, u.Name); err != nil {
 				return nil, err
 			}
@@ -149,16 +174,29 @@ func ImportTenantConfig(tenantStore *Store, iamStore *iam.Store, mktStore *marke
 
 	var clients []ClientImported
 	for _, c := range cfg.Clients {
-		client, secret, err := scopedIAM.CreateClient(c.Name, c.RedirectURIs)
-		if err != nil {
-			return nil, err
+		if c.ClientID != "" && c.SecretHash != "" {
+			// Migration mode: preserve client ID and secret hash.
+			client, err := scopedIAM.CreateClientWithID(c.ClientID, c.SecretHash, c.Name, c.RedirectURIs)
+			if err != nil {
+				return nil, err
+			}
+			clients = append(clients, ClientImported{
+				Name:         client.Name,
+				ClientID:     client.ID,
+				RedirectURIs: client.RedirectURIs,
+			})
+		} else {
+			client, secret, err := scopedIAM.CreateClient(c.Name, c.RedirectURIs)
+			if err != nil {
+				return nil, err
+			}
+			clients = append(clients, ClientImported{
+				Name:         client.Name,
+				ClientID:     client.ID,
+				ClientSecret: secret,
+				RedirectURIs: client.RedirectURIs,
+			})
 		}
-		clients = append(clients, ClientImported{
-			Name:         client.Name,
-			ClientID:     client.ID,
-			ClientSecret: secret,
-			RedirectURIs: client.RedirectURIs,
-		})
 	}
 
 	segmentMap := map[string]string{}
@@ -170,11 +208,32 @@ func ImportTenantConfig(tenantStore *Store, iamStore *iam.Store, mktStore *marke
 		segmentMap[s.Name] = seg.ID
 	}
 
+	contactEmailToID := map[string]string{}
 	for _, c := range cfg.Contacts {
-		contact, err := scopedMkt.CreateContact(c.Email, c.Name, c.ConsentSource)
+		var contact *marketing.Contact
+		var err error
+		if c.Unsubscribed != nil || c.ConsentAt != nil || c.CreatedAt != nil || c.InviteToken != nil {
+			// Migration mode: preserve all fields.
+			unsub := false
+			if c.Unsubscribed != nil {
+				unsub = *c.Unsubscribed
+			}
+			consentAt := time.Now().UTC()
+			if c.ConsentAt != nil {
+				consentAt = *c.ConsentAt
+			}
+			createdAt := time.Now().UTC()
+			if c.CreatedAt != nil {
+				createdAt = *c.CreatedAt
+			}
+			contact, err = scopedMkt.CreateContactFull(c.Email, c.Name, c.ConsentSource, unsub, consentAt, createdAt, c.InviteToken)
+		} else {
+			contact, err = scopedMkt.CreateContact(c.Email, c.Name, c.ConsentSource)
+		}
 		if err != nil {
 			return nil, err
 		}
+		contactEmailToID[c.Email] = contact.ID
 		for _, segName := range c.Segments {
 			if segID, ok := segmentMap[segName]; ok {
 				if err := scopedMkt.AddContactToSegment(contact.ID, segID); err != nil {
@@ -191,8 +250,39 @@ func ImportTenantConfig(tenantStore *Store, iamStore *iam.Store, mktStore *marke
 				segIDs = append(segIDs, segID)
 			}
 		}
-		if _, err := scopedMkt.CreateCampaign(c.Subject, c.HTMLBody, c.FromName, c.FromEmail, segIDs); err != nil {
-			return nil, err
+		if c.Status != "" || c.SentAt != nil || c.CreatedAt != nil {
+			// Migration mode: preserve status and timestamps.
+			status := c.Status
+			if status == "" {
+				status = "draft"
+			}
+			createdAt := time.Now().UTC()
+			if c.CreatedAt != nil {
+				createdAt = *c.CreatedAt
+			}
+			campaign, err := scopedMkt.CreateCampaignFull(c.Subject, c.HTMLBody, c.FromName, c.FromEmail, status, c.SentAt, createdAt, segIDs)
+			if err != nil {
+				return nil, err
+			}
+			// Import recipients if present.
+			for _, r := range c.Recipients {
+				contactID, ok := contactEmailToID[r.ContactEmail]
+				if !ok {
+					// Try to look up contact by email.
+					contact, err := scopedMkt.GetContactByEmail(r.ContactEmail)
+					if err != nil {
+						return nil, fmt.Errorf("recipient contact %q not found", r.ContactEmail)
+					}
+					contactID = contact.ID
+				}
+				if err := scopedMkt.CreateCampaignRecipient(campaign.ID, contactID, r.Status, r.ErrorMessage, r.SentAt, r.OpenedAt); err != nil {
+					return nil, err
+				}
+			}
+		} else {
+			if _, err := scopedMkt.CreateCampaign(c.Subject, c.HTMLBody, c.FromName, c.FromEmail, segIDs); err != nil {
+				return nil, err
+			}
 		}
 	}
 
@@ -400,6 +490,12 @@ func (h *ExportImportHandler) handleExport(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
+	mode := r.URL.Query().Get("mode")
+	if mode == "" {
+		mode = "seed"
+	}
+	migration := mode == "migration"
+
 	scopedIAM := h.iamStore.ForTenant(tn.ID)
 	scopedMkt := h.mktStore.ForTenant(tn.ID)
 
@@ -409,9 +505,9 @@ func (h *ExportImportHandler) handleExport(w http.ResponseWriter, r *http.Reques
 		"registration_enabled": tn.RegistrationEnabled,
 	}
 
-	// SMTP config (only if configured); password is never exported
+	// SMTP config (only if configured)
 	if tn.SMTP.Host != "" {
-		export["smtp"] = map[string]interface{}{
+		smtpExport := map[string]interface{}{
 			"smtp_host":      tn.SMTP.Host,
 			"smtp_port":      tn.SMTP.Port,
 			"smtp_user":      tn.SMTP.User,
@@ -419,39 +515,79 @@ func (h *ExportImportHandler) handleExport(w http.ResponseWriter, r *http.Reques
 			"smtp_from_name": tn.SMTP.FromName,
 			"smtp_rate_ms":   tn.SMTP.RateMS,
 		}
+		if migration {
+			smtpExport["smtp_password"] = tn.SMTP.Password
+		}
+		export["smtp"] = smtpExport
 	}
 
-	// Users — export all users with email, name, role (never passwords).
-	// Also set legacy admin field to first admin for backward compat.
-	users, err := scopedIAM.ListUsers()
-	if err == nil && len(users) > 0 {
-		var exportUsers []map[string]string
-		for _, u := range users {
-			exportUsers = append(exportUsers, map[string]string{
-				"email": u.Email,
-				"name":  u.Name,
-				"role":  u.Role,
-			})
-			if u.Role == "admin" {
-				if _, ok := export["admin"]; !ok {
-					export["admin"] = map[string]string{"email": u.Email}
+	// Users
+	if migration {
+		users, err := scopedIAM.ExportUsers()
+		if err == nil && len(users) > 0 {
+			var exportUsers []map[string]interface{}
+			for _, u := range users {
+				exportUsers = append(exportUsers, map[string]interface{}{
+					"email":         u.Email,
+					"name":          u.Name,
+					"role":          u.Role,
+					"password_hash": u.PasswordHash,
+				})
+				if u.Role == "admin" {
+					if _, ok := export["admin"]; !ok {
+						export["admin"] = map[string]string{"email": u.Email}
+					}
 				}
 			}
+			export["users"] = exportUsers
 		}
-		export["users"] = exportUsers
+	} else {
+		users, err := scopedIAM.ListUsers()
+		if err == nil && len(users) > 0 {
+			var exportUsers []map[string]string
+			for _, u := range users {
+				exportUsers = append(exportUsers, map[string]string{
+					"email": u.Email,
+					"name":  u.Name,
+					"role":  u.Role,
+				})
+				if u.Role == "admin" {
+					if _, ok := export["admin"]; !ok {
+						export["admin"] = map[string]string{"email": u.Email}
+					}
+				}
+			}
+			export["users"] = exportUsers
+		}
 	}
 
-	// Clients — name + redirect_uris only
-	clients, err := scopedIAM.ListClients()
-	if err == nil && len(clients) > 0 {
-		var exportClients []map[string]interface{}
-		for _, c := range clients {
-			exportClients = append(exportClients, map[string]interface{}{
-				"name":          c.Name,
-				"redirect_uris": c.RedirectURIs,
-			})
+	// Clients
+	if migration {
+		clients, err := scopedIAM.ExportClients()
+		if err == nil && len(clients) > 0 {
+			var exportClients []map[string]interface{}
+			for _, c := range clients {
+				exportClients = append(exportClients, map[string]interface{}{
+					"client_id":     c.ID,
+					"secret_hash":   c.SecretHash,
+					"name":          c.Name,
+					"redirect_uris": c.RedirectURIs,
+				})
+			}
+			export["clients"] = exportClients
 		}
-		export["clients"] = exportClients
+	} else {
+		clients, err := scopedIAM.ListClients()
+		if err == nil && len(clients) > 0 {
+			var exportClients []map[string]interface{}
+			for _, c := range clients {
+				exportClients = append(exportClients, map[string]interface{}{
+					"name":          c.Name,
+					"redirect_uris": c.RedirectURIs,
+				})
+			}
+			export["clients"] = exportClients
+		}
 	}
 
 	// Segments — build ID->name map
@@ -479,6 +615,14 @@ func (h *ExportImportHandler) handleExport(w http.ResponseWriter, r *http.Reques
 				"name":           c.Name,
 				"consent_source": c.ConsentSource,
 			}
+			if migration {
+				ec["unsubscribed"] = c.Unsubscribed
+				ec["consent_at"] = c.ConsentAt
+				ec["created_at"] = c.CreatedAt
+				if c.InviteToken != nil {
+					ec["invite_token"] = *c.InviteToken
+				}
+			}
 			if len(c.Segments) > 0 {
 				var segNames []string
 				for _, s := range c.Segments {
@@ -491,12 +635,12 @@ func (h *ExportImportHandler) handleExport(w http.ResponseWriter, r *http.Reques
 		export["contacts"] = exportContacts
 	}
 
-	// Draft campaigns with segment names
+	// Campaigns
 	campaignSummaries, err := scopedMkt.ListCampaigns()
 	if err == nil && len(campaignSummaries) > 0 {
 		var exportCampaigns []map[string]interface{}
 		for _, cs := range campaignSummaries {
-			if cs.Status != "draft" {
+			if !migration && cs.Status != "draft" {
 				continue
 			}
 			full, err := scopedMkt.GetCampaignByID(cs.ID)
@@ -508,6 +652,35 @@ func (h *ExportImportHandler) handleExport(w http.ResponseWriter, r *http.Reques
 				"html_body":  full.HTMLBody,
 				"from_name":  full.FromName,
 				"from_email": full.FromEmail,
+			}
+			if migration {
+				ec["status"] = full.Status
+				ec["created_at"] = full.CreatedAt
+				if full.SentAt != nil {
+					ec["sent_at"] = *full.SentAt
+				}
+				// Export recipients.
+				recipients, err := scopedMkt.GetCampaignRecipients(full.ID)
+				if err == nil && len(recipients) > 0 {
+					var exportRecipients []map[string]interface{}
+					for _, r := range recipients {
+						er := map[string]interface{}{
+							"contact_email": r.ContactEmail,
+							"status":        r.Status,
+						}
+						if r.ErrorMessage != "" {
+							er["error_message"] = r.ErrorMessage
+						}
+						if r.SentAt != nil {
+							er["sent_at"] = *r.SentAt
+						}
+						if r.OpenedAt != nil {
+							er["opened_at"] = *r.OpenedAt
+						}
+						exportRecipients = append(exportRecipients, er)
+					}
+					ec["recipients"] = exportRecipients
+				}
 			}
 			if len(full.SegmentIDs) > 0 {
 				var segNames []string
