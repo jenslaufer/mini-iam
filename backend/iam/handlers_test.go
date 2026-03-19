@@ -778,6 +778,161 @@ func TestAdminDeleteClientNotFound(t *testing.T) {
 	}
 }
 
+// --- Admin Update Client ---
+
+func TestUpdateClient(t *testing.T) {
+	env := newHandlerEnv(t)
+	tok := adminToken(t, env)
+
+	// Create client
+	resp := doReq(t, env, "POST", "/clients", tok,
+		`{"name":"OrigApp","redirect_uris":["http://orig/cb"]}`)
+	client := readJSON(t, resp)
+	clientID := client["client_id"].(string)
+
+	// Update
+	resp = doReq(t, env, "PUT", "/admin/clients/"+clientID, tok,
+		`{"name":"NewApp","redirect_uris":["http://new/cb"]}`)
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d, body = %s", resp.StatusCode, b)
+	}
+	updated := readJSON(t, resp)
+	if updated["name"] != "NewApp" {
+		t.Errorf("name = %v, want NewApp", updated["name"])
+	}
+	uris := updated["redirect_uris"].([]any)
+	if len(uris) != 1 || uris[0] != "http://new/cb" {
+		t.Errorf("redirect_uris = %v", uris)
+	}
+
+	// GET to verify persistence
+	resp = doReq(t, env, "GET", "/admin/clients/"+clientID, tok, "")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("get status = %d", resp.StatusCode)
+	}
+	got := readJSON(t, resp)
+	if got["name"] != "NewApp" {
+		t.Errorf("after get: name = %v", got["name"])
+	}
+}
+
+func TestUpdateClientNotFound(t *testing.T) {
+	env := newHandlerEnv(t)
+	tok := adminToken(t, env)
+
+	resp := doReq(t, env, "PUT", "/admin/clients/nonexistent", tok,
+		`{"name":"X","redirect_uris":["http://x/cb"]}`)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("status = %d, want 404", resp.StatusCode)
+	}
+}
+
+func TestUpdateClientPartial(t *testing.T) {
+	env := newHandlerEnv(t)
+	tok := adminToken(t, env)
+
+	resp := doReq(t, env, "POST", "/clients", tok,
+		`{"name":"Partial","redirect_uris":["http://a/cb","http://b/cb"]}`)
+	client := readJSON(t, resp)
+	clientID := client["client_id"].(string)
+
+	// Update only name
+	resp = doReq(t, env, "PUT", "/admin/clients/"+clientID, tok,
+		`{"name":"Renamed"}`)
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		t.Fatalf("name-only: status = %d, body = %s", resp.StatusCode, b)
+	}
+	updated := readJSON(t, resp)
+	if updated["name"] != "Renamed" {
+		t.Errorf("name = %v", updated["name"])
+	}
+	uris := updated["redirect_uris"].([]any)
+	if len(uris) != 2 {
+		t.Errorf("redirect_uris should be preserved, got %v", uris)
+	}
+
+	// Update only redirect_uris
+	resp = doReq(t, env, "PUT", "/admin/clients/"+clientID, tok,
+		`{"redirect_uris":["http://only/cb"]}`)
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		t.Fatalf("uris-only: status = %d, body = %s", resp.StatusCode, b)
+	}
+	updated = readJSON(t, resp)
+	if updated["name"] != "Renamed" {
+		t.Errorf("name should be preserved, got %v", updated["name"])
+	}
+	uris = updated["redirect_uris"].([]any)
+	if len(uris) != 1 || uris[0] != "http://only/cb" {
+		t.Errorf("redirect_uris = %v", uris)
+	}
+}
+
+func TestUpdateClientSecretUnchanged(t *testing.T) {
+	env := newHandlerEnv(t)
+	tok := adminToken(t, env)
+
+	resp := doReq(t, env, "POST", "/clients", tok,
+		`{"name":"SecretApp","redirect_uris":["http://s/cb"]}`)
+	client := readJSON(t, resp)
+	clientID := client["client_id"].(string)
+	originalSecret := client["client_secret"].(string)
+
+	// Update client
+	resp = doReq(t, env, "PUT", "/admin/clients/"+clientID, tok,
+		`{"name":"Updated"}`)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d", resp.StatusCode)
+	}
+	updated := readJSON(t, resp)
+	// Response should not contain secret
+	if updated["client_secret"] != nil {
+		t.Error("update response should not expose client_secret")
+	}
+
+	// Original secret should still work
+	c, err := env.store.GetClient(clientID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !env.store.ValidateClientSecret(c, originalSecret) {
+		t.Error("original secret no longer valid after update")
+	}
+}
+
+func TestUpdateClientRequiresAdmin(t *testing.T) {
+	env := newHandlerEnv(t)
+	tok := adminToken(t, env)
+
+	resp := doReq(t, env, "POST", "/clients", tok,
+		`{"name":"AdminOnly","redirect_uris":["http://a/cb"]}`)
+	client := readJSON(t, resp)
+	clientID := client["client_id"].(string)
+
+	// Without token
+	resp = doReq(t, env, "PUT", "/admin/clients/"+clientID, "",
+		`{"name":"Hacked"}`)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("no token: status = %d, want 401", resp.StatusCode)
+	}
+
+	// Non-admin token
+	postJSON(t, env, "/register", `{"email":"regular@example.com","password":"longpassword","name":"Reg"}`).Body.Close()
+	loginResp := postJSON(t, env, "/login", `{"email":"regular@example.com","password":"longpassword"}`)
+	userTok := readJSON(t, loginResp)["access_token"].(string)
+
+	resp = doReq(t, env, "PUT", "/admin/clients/"+clientID, userTok,
+		`{"name":"Hacked"}`)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("non-admin: status = %d, want 403", resp.StatusCode)
+	}
+}
+
 // --- Activate Endpoint ---
 
 func TestActivateGET(t *testing.T) {

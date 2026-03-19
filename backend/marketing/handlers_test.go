@@ -298,6 +298,98 @@ func TestAdminCreateContactInvalidJSON(t *testing.T) {
 	}
 }
 
+// --- Contact Update Tests ---
+
+func TestUpdateContact(t *testing.T) {
+	env := newHandlerEnv(t)
+	tok := adminToken(t, env)
+
+	// Create contact
+	resp := doReq(t, env, "POST", "/admin/contacts", tok,
+		`{"email":"upd@example.com","name":"Original"}`)
+	created := readJSON(t, resp)
+	id := created["id"].(string)
+
+	// Update
+	resp = doReq(t, env, "PUT", "/admin/contacts/"+id, tok,
+		`{"name":"Updated","email":"new@example.com"}`)
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		t.Fatalf("update: status = %d, body = %s", resp.StatusCode, b)
+	}
+	updated := readJSON(t, resp)
+	if updated["name"] != "Updated" {
+		t.Errorf("name = %v, want Updated", updated["name"])
+	}
+	if updated["email"] != "new@example.com" {
+		t.Errorf("email = %v, want new@example.com", updated["email"])
+	}
+
+	// GET to verify persistence
+	resp = doReq(t, env, "GET", "/admin/contacts/"+id, tok, "")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("get: status = %d", resp.StatusCode)
+	}
+	got := readJSON(t, resp)
+	if got["name"] != "Updated" {
+		t.Errorf("after get: name = %v", got["name"])
+	}
+	if got["email"] != "new@example.com" {
+		t.Errorf("after get: email = %v", got["email"])
+	}
+}
+
+func TestUpdateContactNotFound(t *testing.T) {
+	env := newHandlerEnv(t)
+	tok := adminToken(t, env)
+
+	resp := doReq(t, env, "PUT", "/admin/contacts/nonexistent", tok,
+		`{"name":"X","email":"x@example.com"}`)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("status = %d, want 404", resp.StatusCode)
+	}
+}
+
+func TestUpdateContactDuplicateEmail(t *testing.T) {
+	env := newHandlerEnv(t)
+	tok := adminToken(t, env)
+
+	// Create two contacts
+	doReq(t, env, "POST", "/admin/contacts", tok,
+		`{"email":"a@example.com","name":"A"}`).Body.Close()
+	resp := doReq(t, env, "POST", "/admin/contacts", tok,
+		`{"email":"b@example.com","name":"B"}`)
+	created := readJSON(t, resp)
+	idB := created["id"].(string)
+
+	// Try to update B's email to A's email
+	resp = doReq(t, env, "PUT", "/admin/contacts/"+idB, tok,
+		`{"name":"B","email":"a@example.com"}`)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusConflict {
+		t.Errorf("status = %d, want 409", resp.StatusCode)
+	}
+}
+
+func TestUpdateContactRequiresAdmin(t *testing.T) {
+	env := newHandlerEnv(t)
+	tok := adminToken(t, env)
+
+	resp := doReq(t, env, "POST", "/admin/contacts", tok,
+		`{"email":"auth@example.com","name":"Auth"}`)
+	created := readJSON(t, resp)
+	id := created["id"].(string)
+
+	// Without token
+	resp = doReq(t, env, "PUT", "/admin/contacts/"+id, "",
+		`{"name":"Hacked","email":"hack@example.com"}`)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("no token: status = %d, want 401", resp.StatusCode)
+	}
+}
+
 // --- Import Handler Tests ---
 
 func TestAdminImportContacts(t *testing.T) {

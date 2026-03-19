@@ -123,6 +123,25 @@ func (s *Store) ListContacts() ([]Contact, error) {
 	return contacts, rows.Err()
 }
 
+func (s *Store) UpdateContact(id, name, email string) (*Contact, error) {
+	contact, err := s.GetContactByID(id)
+	if err != nil {
+		return nil, fmt.Errorf("contact not found")
+	}
+	if name != "" {
+		contact.Name = name
+	}
+	if email != "" {
+		contact.Email = email
+	}
+	_, err = s.db.Exec("UPDATE contacts SET name = ?, email = ? WHERE id = ? AND tenant_id = ?",
+		contact.Name, contact.Email, contact.ID, s.tenantID)
+	if err != nil {
+		return nil, err
+	}
+	return contact, nil
+}
+
 func (s *Store) DeleteContact(id string) error {
 	result, err := s.db.Exec("DELETE FROM contacts WHERE id = ? AND tenant_id = ?", id, s.tenantID)
 	if err != nil {

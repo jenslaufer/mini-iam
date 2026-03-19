@@ -4,7 +4,7 @@ import { ClipboardDocumentIcon, XMarkIcon } from '@heroicons/vue/24/outline'
 import BaseButton from '../components/BaseButton.vue'
 import BaseInput from '../components/BaseInput.vue'
 import BaseModal from '../components/BaseModal.vue'
-import { getClients, createClient, deleteClient } from '../api/clients.js'
+import { getClients, createClient, updateClient, deleteClient } from '../api/clients.js'
 import { useToastStore } from '../stores/toast.js'
 import { useConfirm } from '../composables/useConfirm.js'
 import { useTenantStore } from '../stores/tenant.js'
@@ -20,6 +20,9 @@ const creating = ref(false)
 const newSecret = ref(null)
 
 const form = ref({ name: '', redirectUris: '' })
+const showEditModal = ref(false)
+const editing = ref(false)
+const editForm = ref({ id: '', name: '', redirectUris: '' })
 
 async function loadData() {
   loading.value = true
@@ -64,6 +67,34 @@ async function submitCreate() {
     toast.add('error', e.response?.data?.error_description || 'Failed to create client')
   } finally {
     creating.value = false
+  }
+}
+
+function openEditModal(client) {
+  editForm.value = {
+    id: client.client_id,
+    name: client.name,
+    redirectUris: (client.redirect_uris || []).join('\n'),
+  }
+  showEditModal.value = true
+}
+
+async function submitEdit() {
+  editing.value = true
+  try {
+    const redirect_uris = editForm.value.redirectUris
+      .split('\n')
+      .map((u) => u.trim())
+      .filter(Boolean)
+    const data = await updateClient(editForm.value.id, { name: editForm.value.name, redirect_uris })
+    const idx = clients.value.findIndex((c) => c.client_id === editForm.value.id)
+    if (idx !== -1) clients.value[idx] = { ...clients.value[idx], ...data }
+    showEditModal.value = false
+    toast.add('success', 'Client updated')
+  } catch (e) {
+    toast.add('error', e.response?.data?.error_description || 'Failed to update client')
+  } finally {
+    editing.value = false
   }
 }
 
@@ -176,17 +207,58 @@ function truncate(str, n = 16) {
             </td>
             <td class="px-4 py-3 text-slate-500">{{ formatDate(client.created_at) }}</td>
             <td class="px-4 py-3 text-right">
-              <button
-                @click="remove(client)"
-                class="px-3 py-1.5 rounded-lg border border-red-200 text-xs text-red-600 hover:bg-red-50 transition-colors"
-              >
-                Delete
-              </button>
+              <div class="flex items-center gap-2 justify-end">
+                <button
+                  @click="openEditModal(client)"
+                  class="px-3 py-1.5 rounded-lg border border-slate-200 text-xs text-slate-700 hover:bg-slate-50 transition-colors"
+                >
+                  Edit
+                </button>
+                <button
+                  @click="remove(client)"
+                  class="px-3 py-1.5 rounded-lg border border-red-200 text-xs text-red-600 hover:bg-red-50 transition-colors"
+                >
+                  Delete
+                </button>
+              </div>
             </td>
           </tr>
         </tbody>
       </table>
     </div>
+
+    <!-- Edit modal -->
+    <BaseModal v-model:show="showEditModal" title="Edit Client">
+      <form @submit.prevent="submitEdit" class="space-y-4">
+        <BaseInput
+          label="Application Name"
+          v-model="editForm.name"
+          placeholder="My App"
+          required
+          :disabled="editing"
+        />
+        <div class="flex flex-col gap-1">
+          <label class="text-sm font-medium text-slate-700">
+            Redirect URIs <span class="text-red-500 ml-0.5">*</span>
+          </label>
+          <textarea
+            v-model="editForm.redirectUris"
+            rows="3"
+            placeholder="https://app.example.com/callback&#10;http://localhost:3000/callback"
+            required
+            :disabled="editing"
+            class="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm text-slate-900 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 resize-none"
+          ></textarea>
+          <p class="text-xs text-slate-400">One URI per line</p>
+        </div>
+        <div class="flex justify-end gap-3 pt-2">
+          <BaseButton variant="ghost" type="button" @click="showEditModal = false" :disabled="editing">
+            Cancel
+          </BaseButton>
+          <BaseButton type="submit" :loading="editing">Save</BaseButton>
+        </div>
+      </form>
+    </BaseModal>
 
     <!-- Create modal -->
     <BaseModal v-model:show="showModal" title="New OAuth2 Client">

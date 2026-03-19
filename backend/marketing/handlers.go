@@ -124,6 +124,26 @@ func (h *Handler) AdminContactByID(w http.ResponseWriter, r *http.Request) {
 		contact.Segments = segs
 		iam.WriteJSON(w, http.StatusOK, contact)
 
+	case http.MethodPut:
+		var req struct {
+			Name  string `json:"name"`
+			Email string `json:"email"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			iam.WriteError(w, http.StatusBadRequest, "invalid_request", "invalid JSON body")
+			return
+		}
+		contact, err := store.UpdateContact(id, req.Name, req.Email)
+		if err != nil {
+			if strings.Contains(err.Error(), "UNIQUE") {
+				iam.WriteError(w, http.StatusConflict, "invalid_request", "email already exists")
+				return
+			}
+			iam.WriteError(w, http.StatusNotFound, "not_found", err.Error())
+			return
+		}
+		iam.WriteJSON(w, http.StatusOK, contact)
+
 	case http.MethodDelete:
 		if err := store.DeleteContact(id); err != nil {
 			iam.WriteError(w, http.StatusNotFound, "not_found", err.Error())

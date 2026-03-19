@@ -920,11 +920,7 @@ func (h *Handler) AdminListClients(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, clients)
 }
 
-func (h *Handler) AdminDeleteClient(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodDelete {
-		WriteError(w, http.StatusMethodNotAllowed, "invalid_request", "method not allowed")
-		return
-	}
+func (h *Handler) AdminClientByID(w http.ResponseWriter, r *http.Request) {
 	if _, ok := h.requireAdmin(w, r); !ok {
 		return
 	}
@@ -933,12 +929,49 @@ func (h *Handler) AdminDeleteClient(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, http.StatusBadRequest, "invalid_request", "client id required")
 		return
 	}
+
 	store := h.tenantStore(r)
-	if err := store.DeleteClient(id); err != nil {
-		WriteError(w, http.StatusNotFound, "not_found", "client not found")
-		return
+
+	switch r.Method {
+	case http.MethodGet:
+		client, err := store.GetClient(id)
+		if err != nil {
+			WriteError(w, http.StatusNotFound, "not_found", "client not found")
+			return
+		}
+		WriteJSON(w, http.StatusOK, client)
+
+	case http.MethodPut:
+		var req struct {
+			Name         string   `json:"name"`
+			RedirectURIs []string `json:"redirect_uris"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			WriteError(w, http.StatusBadRequest, "invalid_request", "invalid JSON body")
+			return
+		}
+		client, err := store.UpdateClient(id, req.Name, req.RedirectURIs)
+		if err != nil {
+			WriteError(w, http.StatusNotFound, "not_found", "client not found")
+			return
+		}
+		WriteJSON(w, http.StatusOK, client)
+
+	case http.MethodDelete:
+		if err := store.DeleteClient(id); err != nil {
+			WriteError(w, http.StatusNotFound, "not_found", "client not found")
+			return
+		}
+		WriteJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+
+	default:
+		WriteError(w, http.StatusMethodNotAllowed, "invalid_request", "method not allowed")
 	}
-	WriteJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+}
+
+// AdminDeleteClient is kept for backwards compatibility — delegates to AdminClientByID.
+func (h *Handler) AdminDeleteClient(w http.ResponseWriter, r *http.Request) {
+	h.AdminClientByID(w, r)
 }
 
 func isValidRedirectURI(client *Client, uri string) bool {

@@ -4,7 +4,7 @@ import { MagnifyingGlassIcon } from '@heroicons/vue/24/outline'
 import BaseButton from '../components/BaseButton.vue'
 import BaseInput from '../components/BaseInput.vue'
 import BaseModal from '../components/BaseModal.vue'
-import { listContacts, createContact, deleteContact, importContacts } from '../api/contacts.js'
+import { listContacts, createContact, updateContact, deleteContact, importContacts } from '../api/contacts.js'
 import { listSegments } from '../api/segments.js'
 import { useToastStore } from '../stores/toast.js'
 import { useConfirm } from '../composables/useConfirm.js'
@@ -22,6 +22,10 @@ const search = ref('')
 const showAddModal = ref(false)
 const adding = ref(false)
 const addForm = ref({ email: '', name: '' })
+
+const showEditModal = ref(false)
+const editSaving = ref(false)
+const editForm = ref({ id: '', email: '', name: '' })
 
 const showImportModal = ref(false)
 const importing = ref(false)
@@ -111,6 +115,29 @@ async function submitImport() {
     toast.add('error', e.response?.data?.detail || 'Failed to import contacts')
   } finally {
     importing.value = false
+  }
+}
+
+function openEditModal(contact) {
+  editForm.value = { id: contact.id, email: contact.email, name: contact.name || '' }
+  showEditModal.value = true
+}
+
+async function submitEdit() {
+  editSaving.value = true
+  try {
+    const data = await updateContact(editForm.value.id, {
+      name: editForm.value.name,
+      email: editForm.value.email,
+    })
+    const idx = contacts.value.findIndex((c) => c.id === editForm.value.id)
+    if (idx !== -1) contacts.value[idx] = { ...contacts.value[idx], ...data }
+    showEditModal.value = false
+    toast.add('success', 'Contact updated')
+  } catch (e) {
+    toast.add('error', e.response?.data?.error_description || 'Failed to update contact')
+  } finally {
+    editSaving.value = false
   }
 }
 
@@ -220,17 +247,51 @@ async function remove(contact) {
             <td class="px-4 py-3 text-slate-500 text-xs">{{ contact.consent_source || '—' }}</td>
             <td class="px-4 py-3 text-slate-500">{{ formatDate(contact.created_at) }}</td>
             <td class="px-4 py-3 text-right">
-              <button
-                @click="remove(contact)"
-                class="px-3 py-1.5 rounded-lg border border-red-200 text-xs text-red-600 hover:bg-red-50 transition-colors"
-              >
-                Delete
-              </button>
+              <div class="flex items-center gap-2 justify-end">
+                <button
+                  @click="openEditModal(contact)"
+                  class="px-3 py-1.5 rounded-lg border border-slate-200 text-xs text-slate-700 hover:bg-slate-50 transition-colors"
+                >
+                  Edit
+                </button>
+                <button
+                  @click="remove(contact)"
+                  class="px-3 py-1.5 rounded-lg border border-red-200 text-xs text-red-600 hover:bg-red-50 transition-colors"
+                >
+                  Delete
+                </button>
+              </div>
             </td>
           </tr>
         </tbody>
       </table>
     </div>
+
+    <!-- Edit Contact Modal -->
+    <BaseModal v-model:show="showEditModal" title="Edit Contact">
+      <form @submit.prevent="submitEdit" class="space-y-4">
+        <BaseInput
+          label="Email"
+          type="email"
+          v-model="editForm.email"
+          placeholder="user@example.com"
+          required
+          :disabled="editSaving"
+        />
+        <BaseInput
+          label="Name"
+          v-model="editForm.name"
+          placeholder="Jane Smith"
+          :disabled="editSaving"
+        />
+        <div class="flex justify-end gap-3 pt-2">
+          <BaseButton variant="ghost" type="button" @click="showEditModal = false" :disabled="editSaving">
+            Cancel
+          </BaseButton>
+          <BaseButton type="submit" :loading="editSaving">Save</BaseButton>
+        </div>
+      </form>
+    </BaseModal>
 
     <!-- Add Contact Modal -->
     <BaseModal v-model:show="showAddModal" title="Add Contact">
