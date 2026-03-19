@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -66,24 +67,26 @@ func main() {
 		log.Printf("Admin account seeded: %s", adminEmail)
 	}
 
-	// Startup import from TENANT_CONFIG env var
+	// Startup import from TENANT_CONFIG env var (accepts JSON array or single object)
 	if tenantConfigPath := os.Getenv("TENANT_CONFIG"); tenantConfigPath != "" {
 		data, err := os.ReadFile(tenantConfigPath)
 		if err != nil {
 			log.Fatalf("Failed to read TENANT_CONFIG file %s: %v", tenantConfigPath, err)
 		}
-		var cfg tenant.ImportConfig
-		if err := json.Unmarshal(data, &cfg); err != nil {
+		configs, err := parseTenantConfigs(data)
+		if err != nil {
 			log.Fatalf("Failed to parse TENANT_CONFIG: %v", err)
 		}
-		result, err := tenant.ImportTenantConfig(tenantStore, iamStore, marketingStore, cfg)
-		if err != nil {
-			log.Fatalf("Failed to import tenant config: %v", err)
-		}
-		if result.Skipped {
-			log.Printf("Tenant %q already exists (id: %s), skipped import", cfg.Slug, result.TenantID)
-		} else {
-			log.Printf("Tenant %q imported (id: %s)", cfg.Slug, result.TenantID)
+		for _, cfg := range configs {
+			result, err := tenant.ImportTenantConfig(tenantStore, iamStore, marketingStore, cfg)
+			if err != nil {
+				log.Fatalf("Failed to import tenant config %q: %v", cfg.Slug, err)
+			}
+			if result.Skipped {
+				log.Printf("Tenant %q already exists (id: %s), skipped import", cfg.Slug, result.TenantID)
+			} else {
+				log.Printf("Tenant %q imported (id: %s)", cfg.Slug, result.TenantID)
+			}
 		}
 	}
 
@@ -227,6 +230,24 @@ func main() {
 	if err := http.ListenAndServe(":"+port, handler); err != nil {
 		log.Fatalf("Server failed: %v", err)
 	}
+}
+
+// parseTenantConfigs accepts JSON that is either a single ImportConfig object
+// or an array of ImportConfig objects. Returns a slice in both cases.
+func parseTenantConfigs(data []byte) ([]tenant.ImportConfig, error) {
+	data = bytes.TrimSpace(data)
+	if len(data) > 0 && data[0] == '[' {
+		var configs []tenant.ImportConfig
+		if err := json.Unmarshal(data, &configs); err != nil {
+			return nil, err
+		}
+		return configs, nil
+	}
+	var cfg tenant.ImportConfig
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		return nil, err
+	}
+	return []tenant.ImportConfig{cfg}, nil
 }
 
 func envOr(key, fallback string) string {
