@@ -29,24 +29,30 @@ func (s *Store) TenantID() string {
 
 // --- Contacts ---
 
+// InviteTokenTTL is the validity period for invite/activation tokens.
+const InviteTokenTTL = 7 * 24 * time.Hour
+
 func (s *Store) CreateContact(email, name, consentSource string) (*Contact, error) {
 	inviteToken := uuid.NewString()
+	now := time.Now().UTC()
+	expiresAt := now.Add(InviteTokenTTL)
 	c := &Contact{
-		ID:               uuid.NewString(),
-		TenantID:         s.tenantID,
-		Email:            email,
-		Name:             name,
-		UnsubscribeToken: uuid.NewString(),
-		InviteToken:      &inviteToken,
-		ConsentSource:    consentSource,
-		ConsentAt:        time.Now().UTC(),
-		CreatedAt:        time.Now().UTC(),
+		ID:                    uuid.NewString(),
+		TenantID:              s.tenantID,
+		Email:                 email,
+		Name:                  name,
+		UnsubscribeToken:      uuid.NewString(),
+		InviteToken:           &inviteToken,
+		InviteTokenExpiresAt:  &expiresAt,
+		ConsentSource:         consentSource,
+		ConsentAt:             now,
+		CreatedAt:             now,
 	}
 
 	_, err := s.db.Exec(
-		`INSERT INTO contacts (id, tenant_id, email, name, unsubscribe_token, invite_token, consent_source, consent_at, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		c.ID, c.TenantID, c.Email, c.Name, c.UnsubscribeToken, c.InviteToken, c.ConsentSource, c.ConsentAt, c.CreatedAt,
+		`INSERT INTO contacts (id, tenant_id, email, name, unsubscribe_token, invite_token, invite_token_expires_at, consent_source, consent_at, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		c.ID, c.TenantID, c.Email, c.Name, c.UnsubscribeToken, c.InviteToken, c.InviteTokenExpiresAt, c.ConsentSource, c.ConsentAt, c.CreatedAt,
 	)
 	if err != nil {
 		return nil, err
@@ -174,8 +180,8 @@ func (s *Store) ImportContacts(contacts []ContactImport) (imported int, skipped 
 	defer tx.Rollback()
 
 	stmt, err := tx.Prepare(
-		`INSERT OR IGNORE INTO contacts (id, tenant_id, email, name, unsubscribe_token, invite_token, consent_source, consent_at, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, 'import', ?, ?)`,
+		`INSERT OR IGNORE INTO contacts (id, tenant_id, email, name, unsubscribe_token, invite_token, invite_token_expires_at, consent_source, consent_at, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, 'import', ?, ?)`,
 	)
 	if err != nil {
 		return 0, 0, err
@@ -183,8 +189,9 @@ func (s *Store) ImportContacts(contacts []ContactImport) (imported int, skipped 
 	defer stmt.Close()
 
 	now := time.Now().UTC()
+	expiresAt := now.Add(InviteTokenTTL)
 	for _, c := range contacts {
-		result, err := stmt.Exec(uuid.NewString(), s.tenantID, c.Email, c.Name, uuid.NewString(), uuid.NewString(), now, now)
+		result, err := stmt.Exec(uuid.NewString(), s.tenantID, c.Email, c.Name, uuid.NewString(), uuid.NewString(), expiresAt, now, now)
 		if err != nil {
 			return imported, skipped, err
 		}

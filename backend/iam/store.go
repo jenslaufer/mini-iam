@@ -570,7 +570,10 @@ func (s *Store) getContactByInviteToken(token string) (*contactRow, error) {
 	c := &contactRow{}
 	var userID sql.NullString
 	err := s.db.QueryRow(
-		`SELECT id, email, name, user_id FROM contacts WHERE invite_token = ? AND tenant_id = ?`, token, s.tenantID,
+		`SELECT id, email, name, user_id FROM contacts
+		 WHERE invite_token = ? AND tenant_id = ?
+		   AND (invite_token_expires_at IS NULL OR invite_token_expires_at > ?)`,
+		token, s.tenantID, time.Now().UTC(),
 	).Scan(&c.id, &c.email, &c.name, &userID)
 	if err != nil {
 		return nil, err

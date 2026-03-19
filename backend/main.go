@@ -348,6 +348,7 @@ func migrate(db *sql.DB) error {
 		unsubscribed INTEGER NOT NULL DEFAULT 0,
 		unsubscribe_token TEXT UNIQUE NOT NULL,
 		invite_token TEXT UNIQUE,
+		invite_token_expires_at DATETIME,
 		consent_source TEXT NOT NULL,
 		consent_at DATETIME NOT NULL,
 		created_at DATETIME NOT NULL,
@@ -407,6 +408,7 @@ func migrate(db *sql.DB) error {
 	db.Exec("ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'user'")
 	db.Exec("ALTER TABLE users ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''")
 	db.Exec("ALTER TABLE contacts ADD COLUMN invite_token TEXT UNIQUE")
+	db.Exec("ALTER TABLE contacts ADD COLUMN invite_token_expires_at DATETIME")
 	db.Exec("ALTER TABLE contacts ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''")
 	db.Exec("ALTER TABLE clients ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''")
 	db.Exec("ALTER TABLE auth_codes ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''")

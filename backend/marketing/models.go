@@ -10,8 +10,9 @@ type Contact struct {
 	UserID           *string   `json:"user_id,omitempty"`
 	Unsubscribed     bool      `json:"unsubscribed"`
 	UnsubscribeToken string    `json:"-"`
-	InviteToken      *string   `json:"-"`
-	ConsentSource    string    `json:"consent_source"`
+	InviteToken          *string    `json:"-"`
+	InviteTokenExpiresAt *time.Time `json:"-"`
+	ConsentSource        string     `json:"consent_source"`
 	ConsentAt        time.Time `json:"consent_at"`
 	CreatedAt        time.Time `json:"created_at"`
 	Segments         []Segment `json:"segments,omitempty"`
