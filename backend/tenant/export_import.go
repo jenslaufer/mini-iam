@@ -185,6 +185,18 @@ func ImportTenantConfig(tenantStore *Store, iamStore *iam.Store, mktStore *marke
 				ClientID:     client.ID,
 				RedirectURIs: client.RedirectURIs,
 			})
+		} else if c.ClientID != "" {
+			// Seed mode: fixed client ID, generate a new secret.
+			client, secret, err := scopedIAM.CreateClientWithIDAndNewSecret(c.ClientID, c.Name, c.RedirectURIs)
+			if err != nil {
+				return nil, err
+			}
+			clients = append(clients, ClientImported{
+				Name:         client.Name,
+				ClientID:     client.ID,
+				ClientSecret: secret,
+				RedirectURIs: client.RedirectURIs,
+			})
 		} else {
 			client, secret, err := scopedIAM.CreateClient(c.Name, c.RedirectURIs)
 			if err != nil {

@@ -21,12 +21,13 @@ const email = ref('')
 const password = ref('')
 const error = ref('')
 
+const clientId = import.meta.env.VITE_OIDC_CLIENT_ID || ''
+
 async function submit() {
   try {
-    const data = await iam(endpoints.login, {
-      method: 'POST',
-      body: { email: email.value, password: password.value },
-    })
+    const body = { email: email.value, password: password.value }
+    if (clientId) body.client_id = clientId
+    const data = await iam(endpoints.login, { method: 'POST', body })
     auth.setToken(data.access_token)
     router.push('/dashboard')
   } catch (e) { error.value = e.message }
