@@ -1,3 +1,5 @@
 /.env
 test-results/
 example/tenant-demo copy.json
+example/demo-frontend/node_modules/
+frontend/coverage/
