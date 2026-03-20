@@ -94,6 +94,7 @@ func (h *Handler) Register(w http.ResponseWriter, r *http.Request) {
 		Email    string `json:"email"`
 		Password string `json:"password"`
 		Name     string `json:"name"`
+		ClientID string `json:"client_id"`
 	}
 	if !DecodeJSON(w, r, &req) {
 		return
@@ -113,6 +114,15 @@ func (h *Handler) Register(w http.ResponseWriter, r *http.Request) {
 	}
 
 	store := h.tenantStore(r)
+
+	// If client_id provided, validate it exists in this tenant
+	if req.ClientID != "" {
+		if _, err := store.GetClient(req.ClientID); err != nil {
+			WriteError(w, http.StatusBadRequest, "invalid_request", "unknown client_id")
+			return
+		}
+	}
+
 	user, err := store.CreateUser(req.Email, req.Password, req.Name)
 	if err != nil {
 		if strings.Contains(err.Error(), "UNIQUE") {
@@ -135,6 +145,7 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Email    string `json:"email"`
 		Password string `json:"password"`
+		ClientID string `json:"client_id"`
 	}
 	if !DecodeJSON(w, r, &req) {
 		return
@@ -147,26 +158,41 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// If client_id provided, validate it exists in this tenant
+	audience := ""
+	if req.ClientID != "" {
+		_, err := store.GetClient(req.ClientID)
+		if err != nil {
+			WriteError(w, http.StatusBadRequest, "invalid_request", "unknown client_id")
+			return
+		}
+		audience = req.ClientID
+	}
+
 	ts, err := h.tenantTokens(r)
 	if err != nil {
 		WriteError(w, http.StatusInternalServerError, "server_error", "failed to load tenant keys")
 		return
 	}
 
+	if audience == "" {
+		audience = ts.issuer
+	}
+
 	tenantID := tenantctx.FromContext(r.Context())
-	accessToken, err := ts.CreateAccessToken(user, ts.issuer, tenantID)
+	accessToken, err := ts.CreateAccessToken(user, audience, tenantID)
 	if err != nil {
 		WriteError(w, http.StatusInternalServerError, "server_error", "failed to create access token")
 		return
 	}
 
-	idToken, err := ts.CreateIDToken(user, ts.issuer, "", tenantID)
+	idToken, err := ts.CreateIDToken(user, audience, "", tenantID)
 	if err != nil {
 		WriteError(w, http.StatusInternalServerError, "server_error", "failed to create id token")
 		return
 	}
 
-	refreshToken, err := store.CreateRefreshToken("", user.ID, "openid profile email")
+	refreshToken, err := store.CreateRefreshToken(req.ClientID, user.ID, "openid profile email")
 	if err != nil {
 		WriteError(w, http.StatusInternalServerError, "server_error", "failed to create refresh token")
 		return

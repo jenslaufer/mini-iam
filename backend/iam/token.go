@@ -16,6 +16,8 @@ type TokenService struct {
 	issuer     string
 }
 
+func (ts *TokenService) Issuer() string { return ts.issuer }
+
 func NewTokenService(key *rsa.PrivateKey, issuer string) *TokenService {
 	return &TokenService{privateKey: key, issuer: issuer}
 }

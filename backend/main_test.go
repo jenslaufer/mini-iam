@@ -4829,3 +4829,128 @@ func TestDiscoveryIncludesClientCredentials(t *testing.T) {
 		t.Errorf("token_endpoint_auth_methods_supported does not contain %q: %v", "client_secret_basic", doc.TokenEndpointAuthMethodsSupported)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Audience / client_id tests
+// ---------------------------------------------------------------------------
+
+func TestLoginWithClientID(t *testing.T) {
+	srv := newTestServer(t)
+	client := registerClient(t, srv, "Test App", []string{"http://localhost/cb"})
+
+	resp := doJSON(t, srv, "/login", map[string]any{
+		"email":     "admin@test.com",
+		"password":  "adminpass123",
+		"client_id": client.ClientID,
+	})
+	assertStatus(t, resp, http.StatusOK)
+	var tr TokenResponse
+	decodeJSON(t, resp, &tr)
+
+	claims := verifyJWT(t, srv, tr.AccessToken)
+	aud, _ := claims["aud"].(string)
+	if aud != client.ClientID {
+		t.Errorf("expected aud %q, got %q", client.ClientID, aud)
+	}
+}
+
+func TestLoginWithoutClientID(t *testing.T) {
+	srv := newTestServer(t)
+
+	resp := doJSON(t, srv, "/login", map[string]any{
+		"email":    "admin@test.com",
+		"password": "adminpass123",
+	})
+	assertStatus(t, resp, http.StatusOK)
+	var tr TokenResponse
+	decodeJSON(t, resp, &tr)
+
+	claims := verifyJWT(t, srv, tr.AccessToken)
+	aud, _ := claims["aud"].(string)
+	const wantAud = "http://test-issuer"
+	if aud != wantAud {
+		t.Errorf("expected aud %q, got %q", wantAud, aud)
+	}
+}
+
+func TestLoginWithInvalidClientID(t *testing.T) {
+	srv := newTestServer(t)
+
+	resp := doJSON(t, srv, "/login", map[string]any{
+		"email":     "admin@test.com",
+		"password":  "adminpass123",
+		"client_id": "nonexistent-id",
+	})
+	assertStatus(t, resp, http.StatusBadRequest)
+}
+
+func TestRegisterWithClientID(t *testing.T) {
+	srv := newTestServer(t)
+	client := registerClient(t, srv, "Test App", []string{"http://localhost/cb"})
+
+	regResp := doJSON(t, srv, "/register", map[string]any{
+		"email":     "test@example.com",
+		"password":  "password123",
+		"name":      "Test",
+		"client_id": client.ClientID,
+	})
+	assertStatus(t, regResp, http.StatusCreated)
+
+	loginResp := doJSON(t, srv, "/login", map[string]any{
+		"email":     "test@example.com",
+		"password":  "password123",
+		"client_id": client.ClientID,
+	})
+	assertStatus(t, loginResp, http.StatusOK)
+	var tr TokenResponse
+	decodeJSON(t, loginResp, &tr)
+
+	claims := verifyJWT(t, srv, tr.AccessToken)
+	aud, _ := claims["aud"].(string)
+	if aud != client.ClientID {
+		t.Errorf("expected aud %q, got %q", client.ClientID, aud)
+	}
+}
+
+func TestImportTenantWithFixedClientID(t *testing.T) {
+	db, err := openDB(":memory:")
+	if err != nil {
+		t.Fatalf("openDB: %v", err)
+	}
+
+	tenantStore := tenant.NewStore(db)
+	iamStore := iam.NewStore(db)
+	mktStore := marketing.NewStore(db)
+
+	cfg := tenant.ImportConfig{
+		Slug: "fixed-client-test",
+		Name: "Fixed Client Test",
+		Admin: &tenant.AdminConfig{
+			Email:    "admin@fixed.test",
+			Password: "admin1234",
+		},
+		Clients: []tenant.ClientConfig{{
+			ClientID:     "00000000-0000-0000-0000-000000000001",
+			Name:         "Demo Frontend",
+			RedirectURIs: []string{"http://localhost:3001/callback"},
+		}},
+	}
+
+	result, err := tenant.ImportTenantConfig(tenantStore, iamStore, mktStore, cfg)
+	if err != nil {
+		t.Fatalf("ImportTenantConfig: %v", err)
+	}
+
+	found := false
+	for _, c := range result.Clients {
+		if c.ClientID == "00000000-0000-0000-0000-000000000001" {
+			found = true
+			if c.Name != "Demo Frontend" {
+				t.Errorf("expected client name 'Demo Frontend', got %q", c.Name)
+			}
+		}
+	}
+	if !found {
+		t.Errorf("expected client with fixed ID 00000000-0000-0000-0000-000000000001, got %v", result.Clients)
+	}
+}
