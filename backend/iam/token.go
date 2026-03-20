@@ -39,6 +39,23 @@ func (ts *TokenService) CreateAccessToken(user *User, audience string, tenantID 
 	return token.SignedString(ts.privateKey)
 }
 
+func (ts *TokenService) CreateServiceToken(clientID, audience, tenantID string) (string, error) {
+	now := time.Now().UTC()
+	claims := jwt.MapClaims{
+		"sub":  clientID,
+		"iss":  ts.issuer,
+		"aud":  audience,
+		"exp":  now.Add(1 * time.Hour).Unix(),
+		"iat":  now.Unix(),
+		"tid":  tenantID,
+		"type": "client_credentials",
+	}
+
+	token := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
+	token.Header["kid"] = "main"
+	return token.SignedString(ts.privateKey)
+}
+
 func (ts *TokenService) CreateIDToken(user *User, audience, nonce string, tenantID string) (string, error) {
 	now := time.Now().UTC()
 	claims := jwt.MapClaims{
