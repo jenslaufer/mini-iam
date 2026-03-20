@@ -18,6 +18,9 @@ import (
 	"crypto/sha256"
 
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/jenslaufer/launch-kit/iam"
+	"github.com/jenslaufer/launch-kit/marketing"
+	"github.com/jenslaufer/launch-kit/tenant"
 )
 
 // ---------------------------------------------------------------------------

@@ -152,11 +152,6 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 	}
 
 	store := h.tenantStore(r)
-	user, err := store.AuthenticateUser(req.Email, req.Password)
-	if err != nil {
-		WriteError(w, http.StatusUnauthorized, "invalid_grant", "invalid credentials")
-		return
-	}
 
 	// If client_id provided, validate it exists in this tenant
 	audience := ""
@@ -169,6 +164,12 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 		audience = req.ClientID
 	}
 
+	user, err := store.AuthenticateUser(req.Email, req.Password)
+	if err != nil {
+		WriteError(w, http.StatusUnauthorized, "invalid_grant", "invalid credentials")
+		return
+	}
+
 	ts, err := h.tenantTokens(r)
 	if err != nil {
 		WriteError(w, http.StatusInternalServerError, "server_error", "failed to load tenant keys")
@@ -176,7 +177,7 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if audience == "" {
-		audience = ts.issuer
+		audience = ts.Issuer()
 	}
 
 	tenantID := tenantctx.FromContext(r.Context())
@@ -186,13 +187,13 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	idToken, err := ts.CreateIDToken(user, audience, "", tenantID)
+	idToken, err := ts.CreateIDToken(user, ts.issuer, "", tenantID)
 	if err != nil {
 		WriteError(w, http.StatusInternalServerError, "server_error", "failed to create id token")
 		return
 	}
 
-	refreshToken, err := store.CreateRefreshToken(req.ClientID, user.ID, "openid profile email")
+	refreshToken, err := store.CreateRefreshToken("", user.ID, "openid profile email")
 	if err != nil {
 		WriteError(w, http.StatusInternalServerError, "server_error", "failed to create refresh token")
 		return
