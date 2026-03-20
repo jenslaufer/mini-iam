@@ -4785,7 +4785,7 @@ func TestClientCredentialsBasicAuth(t *testing.T) {
 	noRedirect := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error {
 		return http.ErrUseLastResponse
 	}}
-	resp, err := noRedirect.Do(req)
+	resp, err = noRedirect.Do(req)
 	if err != nil {
 		t.Fatalf("Do: %v", err)
 	}
