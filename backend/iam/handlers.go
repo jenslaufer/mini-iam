@@ -311,9 +311,71 @@ func (h *Handler) Token(w http.ResponseWriter, r *http.Request) {
 		h.tokenAuthorizationCode(w, r)
 	case "refresh_token":
 		h.tokenRefreshToken(w, r)
+	case "client_credentials":
+		h.tokenClientCredentials(w, r)
 	default:
-		WriteError(w, http.StatusBadRequest, "unsupported_grant_type", "grant_type must be authorization_code or refresh_token")
+		WriteError(w, http.StatusBadRequest, "unsupported_grant_type", "grant_type must be authorization_code, refresh_token, or client_credentials")
 	}
+}
+
+// extractClientCredentials reads client_id and client_secret from form values
+// or from the HTTP Basic Authorization header (client_secret_basic).
+func extractClientCredentials(r *http.Request) (clientID, clientSecret string) {
+	clientID = r.FormValue("client_id")
+	clientSecret = r.FormValue("client_secret")
+	if clientID != "" {
+		return clientID, clientSecret
+	}
+	auth := r.Header.Get("Authorization")
+	if strings.HasPrefix(auth, "Basic ") {
+		decoded, err := base64.StdEncoding.DecodeString(strings.TrimPrefix(auth, "Basic "))
+		if err == nil {
+			if idx := strings.IndexByte(string(decoded), ':'); idx >= 0 {
+				clientID = string(decoded[:idx])
+				clientSecret = string(decoded[idx+1:])
+			}
+		}
+	}
+	return clientID, clientSecret
+}
+
+func (h *Handler) tokenClientCredentials(w http.ResponseWriter, r *http.Request) {
+	clientID, clientSecret := extractClientCredentials(r)
+	if clientID == "" || clientSecret == "" {
+		WriteError(w, http.StatusBadRequest, "invalid_request", "client_id and client_secret required")
+		return
+	}
+
+	store := h.tenantStore(r)
+	client, err := store.GetClient(clientID)
+	if err != nil {
+		WriteError(w, http.StatusUnauthorized, "invalid_client", "unknown client")
+		return
+	}
+
+	if !store.ValidateClientSecret(client, clientSecret) {
+		WriteError(w, http.StatusUnauthorized, "invalid_client", "invalid client credentials")
+		return
+	}
+
+	ts, err := h.tenantTokens(r)
+	if err != nil {
+		WriteError(w, http.StatusInternalServerError, "server_error", "failed to load tenant keys")
+		return
+	}
+
+	tenantID := tenantctx.FromContext(r.Context())
+	accessToken, err := ts.CreateServiceToken(clientID, clientID, tenantID)
+	if err != nil {
+		WriteError(w, http.StatusInternalServerError, "server_error", "failed to create access token")
+		return
+	}
+
+	WriteTokenJSON(w, http.StatusOK, TokenResponse{
+		AccessToken: accessToken,
+		TokenType:   "Bearer",
+		ExpiresIn:   3600,
+	})
 }
 
 func (h *Handler) tokenAuthorizationCode(w http.ResponseWriter, r *http.Request) {
@@ -538,10 +600,10 @@ func (h *Handler) Discovery(w http.ResponseWriter, r *http.Request) {
 		RegistrationEndpoint:              base + "/clients",
 		ScopesSupported:                   []string{"openid", "profile", "email"},
 		ResponseTypesSupported:            []string{"code"},
-		GrantTypesSupported:               []string{"authorization_code", "refresh_token"},
+		GrantTypesSupported:               []string{"authorization_code", "refresh_token", "client_credentials"},
 		SubjectTypesSupported:             []string{"public"},
 		IDTokenSigningAlgValuesSupported:  []string{"RS256"},
-		TokenEndpointAuthMethodsSupported: []string{"client_secret_post", "none"},
+		TokenEndpointAuthMethodsSupported: []string{"client_secret_post", "client_secret_basic", "none"},
 		CodeChallengeMethodsSupported:     []string{"S256"},
 	}
 	WriteJSON(w, http.StatusOK, doc)

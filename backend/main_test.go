@@ -4595,3 +4595,237 @@ func TestLifecycleTokenSecurity(t *testing.T) {
 		}
 	})
 }
+
+// ---------------------------------------------------------------------------
+// Client Credentials Grant
+// ---------------------------------------------------------------------------
+
+func TestClientCredentialsGrant(t *testing.T) {
+	srv := newTestServer(t)
+	client := registerClient(t, srv, "svc", []string{"https://example.com/cb"})
+
+	resp := doForm(t, srv, "/token", url.Values{
+		"grant_type":    {"client_credentials"},
+		"client_id":     {client.ClientID},
+		"client_secret": {client.ClientSecret},
+	})
+	assertStatus(t, resp, http.StatusOK)
+
+	var tr TokenResponse
+	decodeJSON(t, resp, &tr)
+
+	if tr.AccessToken == "" {
+		t.Fatal("expected access_token, got empty string")
+	}
+	if tr.TokenType != "Bearer" {
+		t.Errorf("token_type: got %q, want %q", tr.TokenType, "Bearer")
+	}
+	if tr.ExpiresIn != 3600 {
+		t.Errorf("expires_in: got %d, want 3600", tr.ExpiresIn)
+	}
+}
+
+func TestClientCredentialsInvalidSecret(t *testing.T) {
+	srv := newTestServer(t)
+	client := registerClient(t, srv, "svc", []string{"https://example.com/cb"})
+
+	resp := doForm(t, srv, "/token", url.Values{
+		"grant_type":    {"client_credentials"},
+		"client_id":     {client.ClientID},
+		"client_secret": {"wrong-secret"},
+	})
+	assertStatus(t, resp, http.StatusUnauthorized)
+}
+
+func TestClientCredentialsUnknownClient(t *testing.T) {
+	srv := newTestServer(t)
+
+	resp := doForm(t, srv, "/token", url.Values{
+		"grant_type":    {"client_credentials"},
+		"client_id":     {"non-existent-client-id"},
+		"client_secret": {"some-secret"},
+	})
+	assertStatus(t, resp, http.StatusUnauthorized)
+}
+
+func TestClientCredentialsMissingFields(t *testing.T) {
+	srv := newTestServer(t)
+	client := registerClient(t, srv, "svc", []string{"https://example.com/cb"})
+
+	resp := doForm(t, srv, "/token", url.Values{
+		"grant_type":    {"client_credentials"},
+		"client_secret": {client.ClientSecret},
+	})
+	assertStatus(t, resp, http.StatusBadRequest)
+
+	resp = doForm(t, srv, "/token", url.Values{
+		"grant_type": {"client_credentials"},
+		"client_id":  {client.ClientID},
+	})
+	assertStatus(t, resp, http.StatusBadRequest)
+}
+
+func TestClientCredentialsNoRefreshToken(t *testing.T) {
+	srv := newTestServer(t)
+	client := registerClient(t, srv, "svc", []string{"https://example.com/cb"})
+
+	resp := doForm(t, srv, "/token", url.Values{
+		"grant_type":    {"client_credentials"},
+		"client_id":     {client.ClientID},
+		"client_secret": {client.ClientSecret},
+	})
+	assertStatus(t, resp, http.StatusOK)
+
+	var tr TokenResponse
+	decodeJSON(t, resp, &tr)
+
+	if tr.RefreshToken != "" {
+		t.Errorf("expected no refresh_token, got %q", tr.RefreshToken)
+	}
+}
+
+func TestClientCredentialsTokenValidation(t *testing.T) {
+	srv := newTestServer(t)
+	client := registerClient(t, srv, "svc", []string{"https://example.com/cb"})
+
+	resp := doForm(t, srv, "/token", url.Values{
+		"grant_type":    {"client_credentials"},
+		"client_id":     {client.ClientID},
+		"client_secret": {client.ClientSecret},
+	})
+	assertStatus(t, resp, http.StatusOK)
+	var tr TokenResponse
+	decodeJSON(t, resp, &tr)
+
+	jwksResp := doGet(t, srv, "/jwks", nil)
+	assertStatus(t, jwksResp, http.StatusOK)
+	var jwks struct {
+		Keys []struct {
+			N string `json:"n"`
+			E string `json:"e"`
+		} `json:"keys"`
+	}
+	decodeJSON(t, jwksResp, &jwks)
+	if len(jwks.Keys) == 0 {
+		t.Fatal("JWKS: no keys returned")
+	}
+
+	nBytes, err := base64.RawURLEncoding.DecodeString(jwks.Keys[0].N)
+	if err != nil {
+		t.Fatalf("decode n: %v", err)
+	}
+	eBytes, err := base64.RawURLEncoding.DecodeString(jwks.Keys[0].E)
+	if err != nil {
+		t.Fatalf("decode e: %v", err)
+	}
+	n := new(big.Int).SetBytes(nBytes)
+	e := int(new(big.Int).SetBytes(eBytes).Int64())
+	pubKey := &rsa.PublicKey{N: n, E: e}
+
+	parsed, err := jwt.Parse(tr.AccessToken, func(token *jwt.Token) (interface{}, error) {
+		if _, ok := token.Method.(*jwt.SigningMethodRSA); !ok {
+			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
+		}
+		return pubKey, nil
+	})
+	if err != nil {
+		t.Fatalf("jwt.Parse: %v", err)
+	}
+	if !parsed.Valid {
+		t.Fatal("token is not valid")
+	}
+
+	claims, ok := parsed.Claims.(jwt.MapClaims)
+	if !ok {
+		t.Fatal("expected MapClaims")
+	}
+
+	if sub, _ := claims["sub"].(string); sub != client.ClientID {
+		t.Errorf("sub: got %q, want %q", sub, client.ClientID)
+	}
+
+	switch aud := claims["aud"].(type) {
+	case string:
+		if aud != client.ClientID {
+			t.Errorf("aud: got %q, want %q", aud, client.ClientID)
+		}
+	case []interface{}:
+		if len(aud) == 0 {
+			t.Error("aud: empty slice")
+		} else if aud[0].(string) != client.ClientID {
+			t.Errorf("aud[0]: got %q, want %q", aud[0], client.ClientID)
+		}
+	default:
+		t.Errorf("aud: unexpected type %T", claims["aud"])
+	}
+
+	if _, ok := claims["tid"]; !ok {
+		t.Error("tid: expected claim to be present")
+	}
+
+	if typ, _ := claims["type"].(string); typ != "client_credentials" {
+		t.Errorf("type: got %q, want %q", typ, "client_credentials")
+	}
+}
+
+func TestClientCredentialsBasicAuth(t *testing.T) {
+	srv := newTestServer(t)
+	client := registerClient(t, srv, "svc", []string{"https://example.com/cb"})
+
+	credentials := base64.StdEncoding.EncodeToString([]byte(client.ClientID + ":" + client.ClientSecret))
+
+	body := strings.NewReader("grant_type=client_credentials")
+	req, err := http.NewRequest(http.MethodPost, srv.URL+"/token", body)
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Authorization", "Basic "+credentials)
+
+	noRedirect := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	}}
+	resp, err := noRedirect.Do(req)
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	assertStatus(t, resp, http.StatusOK)
+
+	var tr TokenResponse
+	decodeJSON(t, resp, &tr)
+	if tr.AccessToken == "" {
+		t.Fatal("expected access_token, got empty string")
+	}
+}
+
+func TestDiscoveryIncludesClientCredentials(t *testing.T) {
+	srv := newTestServer(t)
+
+	resp := doGet(t, srv, "/.well-known/openid-configuration", nil)
+	assertStatus(t, resp, http.StatusOK)
+
+	var doc OIDCDiscovery
+	decodeJSON(t, resp, &doc)
+
+	foundGrant := false
+	for _, g := range doc.GrantTypesSupported {
+		if g == "client_credentials" {
+			foundGrant = true
+			break
+		}
+	}
+	if !foundGrant {
+		t.Errorf("grant_types_supported does not contain %q: %v", "client_credentials", doc.GrantTypesSupported)
+	}
+
+	foundMethod := false
+	for _, m := range doc.TokenEndpointAuthMethodsSupported {
+		if m == "client_secret_basic" {
+			foundMethod = true
+			break
+		}
+	}
+	if !foundMethod {
+		t.Errorf("token_endpoint_auth_methods_supported does not contain %q: %v", "client_secret_basic", doc.TokenEndpointAuthMethodsSupported)
+	}
+}

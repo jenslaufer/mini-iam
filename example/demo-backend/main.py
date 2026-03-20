@@ -15,34 +15,39 @@ OIDC_ISSUER_URL = os.environ["OIDC_ISSUER_URL"].rstrip("/")
 OIDC_JWKS_URI = os.environ["OIDC_JWKS_URI"]
 OIDC_AUDIENCE = os.environ.get("OIDC_AUDIENCE", "")
 IAM_INTERNAL_URL = os.environ.get("IAM_INTERNAL_URL", "").rstrip("/")  # e.g. http://launch-kit:8080/t/demo
-IAM_ADMIN_EMAIL = os.environ.get("IAM_ADMIN_EMAIL", "")
-IAM_ADMIN_PASSWORD = os.environ.get("IAM_ADMIN_PASSWORD", "")
+OIDC_CLIENT_ID = os.environ.get("OIDC_CLIENT_ID", "")
+OIDC_CLIENT_SECRET = os.environ.get("OIDC_CLIENT_SECRET", "")
 
 jwks_client: jwt.PyJWKClient | None = None
-iam_admin_token: str = ""
+iam_service_token: str = ""
 
 
-def _get_iam_admin_token() -> str:
-    """Login as IAM admin to get a service token for contact creation."""
-    global iam_admin_token
-    if iam_admin_token:
-        # Quick check: is it still valid?
+def _get_iam_service_token() -> str:
+    """Obtain a service token via client_credentials grant."""
+    global iam_service_token
+    if iam_service_token:
         try:
-            jwt.decode(iam_admin_token, options={"verify_signature": False, "verify_exp": True})
-            return iam_admin_token
+            jwt.decode(iam_service_token, options={"verify_signature": False, "verify_exp": True})
+            return iam_service_token
         except jwt.ExpiredSignatureError:
             pass
     import urllib.request
+    import urllib.parse
     import json
+    data = urllib.parse.urlencode({
+        "grant_type": "client_credentials",
+        "client_id": OIDC_CLIENT_ID,
+        "client_secret": OIDC_CLIENT_SECRET,
+    }).encode()
     req = urllib.request.Request(
-        f"{IAM_INTERNAL_URL}/login",
-        data=json.dumps({"email": IAM_ADMIN_EMAIL, "password": IAM_ADMIN_PASSWORD}).encode(),
-        headers={"Content-Type": "application/json"},
+        f"{IAM_INTERNAL_URL}/token",
+        data=data,
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
     )
     with urllib.request.urlopen(req) as resp:
-        data = json.loads(resp.read())
-    iam_admin_token = data["access_token"]
-    return iam_admin_token
+        result = json.loads(resp.read())
+    iam_service_token = result["access_token"]
+    return iam_service_token
 
 
 @asynccontextmanager
@@ -109,7 +114,7 @@ def subscribe(req: SubscribeRequest):
     """Landing page signup — creates a contact in IAM (no password yet)."""
     import urllib.request
     import json
-    token = _get_iam_admin_token()
+    token = _get_iam_service_token()
     body = json.dumps({"email": req.email, "name": req.name}).encode()
     http_req = urllib.request.Request(
         f"{IAM_INTERNAL_URL}/admin/contacts",

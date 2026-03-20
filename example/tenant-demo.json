@@ -20,6 +20,14 @@
         "role": "member",
         "password": "alice1234"
       }
+    ],
+    "clients": [
+      {
+        "client_id": "demo-backend-service",
+        "secret": "demo-backend-secret",
+        "name": "Demo Backend Service",
+        "redirect_uris": []
+      }
     ]
   },
   {
