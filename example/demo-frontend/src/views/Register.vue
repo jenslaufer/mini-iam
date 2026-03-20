@@ -23,20 +23,20 @@ const email = ref('')
 const password = ref('')
 const error = ref('')
 
+const clientId = import.meta.env.VITE_OIDC_CLIENT_ID || ''
+
 async function submit() {
   if (password.value.length < 8) {
     error.value = 'Password must be at least 8 characters'
     return
   }
   try {
-    await iam(endpoints.register, {
-      method: 'POST',
-      body: { email: email.value, password: password.value, name: name.value },
-    })
-    const tokens = await iam(endpoints.login, {
-      method: 'POST',
-      body: { email: email.value, password: password.value },
-    })
+    const regBody = { email: email.value, password: password.value, name: name.value }
+    if (clientId) regBody.client_id = clientId
+    await iam(endpoints.register, { method: 'POST', body: regBody })
+    const loginBody = { email: email.value, password: password.value }
+    if (clientId) loginBody.client_id = clientId
+    const tokens = await iam(endpoints.login, { method: 'POST', body: loginBody })
     auth.setToken(tokens.access_token)
     router.push('/dashboard')
   } catch (e) { error.value = e.message }

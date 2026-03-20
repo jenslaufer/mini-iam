@@ -318,6 +318,33 @@ func (s *Store) CreateClientWithID(id, secretHash, name string, redirectURIs []s
 	return c, nil
 }
 
+// CreateClientWithIDAndNewSecret creates a client with a specific ID but generates a new secret.
+func (s *Store) CreateClientWithIDAndNewSecret(id, name string, redirectURIs []string) (*Client, string, error) {
+	secret := uuid.NewString()
+	hash, err := bcrypt.GenerateFromPassword([]byte(secret), bcrypt.DefaultCost)
+	if err != nil {
+		return nil, "", err
+	}
+
+	urisJSON, _ := json.Marshal(redirectURIs)
+	c := &Client{
+		ID:           id,
+		TenantID:     s.tenantID,
+		SecretHash:   string(hash),
+		Name:         name,
+		RedirectURIs: redirectURIs,
+		CreatedAt:    time.Now().UTC(),
+	}
+	_, err = s.db.Exec(
+		"INSERT INTO clients (id, tenant_id, secret_hash, name, redirect_uris, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+		c.ID, c.TenantID, c.SecretHash, c.Name, string(urisJSON), c.CreatedAt,
+	)
+	if err != nil {
+		return nil, "", err
+	}
+	return c, secret, nil
+}
+
 func (s *Store) UpdateClient(id, name string, redirectURIs []string) (*Client, error) {
 	client, err := s.GetClient(id)
 	if err != nil {

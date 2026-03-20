@@ -56,6 +56,7 @@ services:
       context: ./demo-frontend
       args:
         VITE_OIDC_ISSUER_URL: "${VITE_OIDC_ISSUER_URL}"
+        VITE_OIDC_CLIENT_ID: "${VITE_OIDC_CLIENT_ID}"
         VITE_API_URL: "${VITE_API_URL}"
     ports:
       - "${DEMO_PORT}:3000"

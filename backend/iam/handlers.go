@@ -94,6 +94,7 @@ func (h *Handler) Register(w http.ResponseWriter, r *http.Request) {
 		Email    string `json:"email"`
 		Password string `json:"password"`
 		Name     string `json:"name"`
+		ClientID string `json:"client_id"`
 	}
 	if !DecodeJSON(w, r, &req) {
 		return
@@ -113,6 +114,15 @@ func (h *Handler) Register(w http.ResponseWriter, r *http.Request) {
 	}
 
 	store := h.tenantStore(r)
+
+	// If client_id provided, validate it exists in this tenant
+	if req.ClientID != "" {
+		if _, err := store.GetClient(req.ClientID); err != nil {
+			WriteError(w, http.StatusBadRequest, "invalid_request", "unknown client_id")
+			return
+		}
+	}
+
 	user, err := store.CreateUser(req.Email, req.Password, req.Name)
 	if err != nil {
 		if strings.Contains(err.Error(), "UNIQUE") {
@@ -135,12 +145,25 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Email    string `json:"email"`
 		Password string `json:"password"`
+		ClientID string `json:"client_id"`
 	}
 	if !DecodeJSON(w, r, &req) {
 		return
 	}
 
 	store := h.tenantStore(r)
+
+	// If client_id provided, validate it exists in this tenant
+	audience := ""
+	if req.ClientID != "" {
+		_, err := store.GetClient(req.ClientID)
+		if err != nil {
+			WriteError(w, http.StatusBadRequest, "invalid_request", "unknown client_id")
+			return
+		}
+		audience = req.ClientID
+	}
+
 	user, err := store.AuthenticateUser(req.Email, req.Password)
 	if err != nil {
 		WriteError(w, http.StatusUnauthorized, "invalid_grant", "invalid credentials")
@@ -153,8 +176,12 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if audience == "" {
+		audience = ts.Issuer()
+	}
+
 	tenantID := tenantctx.FromContext(r.Context())
-	accessToken, err := ts.CreateAccessToken(user, ts.issuer, tenantID)
+	accessToken, err := ts.CreateAccessToken(user, audience, tenantID)
 	if err != nil {
 		WriteError(w, http.StatusInternalServerError, "server_error", "failed to create access token")
 		return
