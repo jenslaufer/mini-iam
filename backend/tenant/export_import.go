@@ -9,6 +9,7 @@ import (
 
 	"github.com/jenslaufer/launch-kit/iam"
 	"github.com/jenslaufer/launch-kit/marketing"
+	"golang.org/x/crypto/bcrypt"
 )
 
 // --- Config types for import ---
@@ -41,6 +42,7 @@ type UserConfig struct {
 
 type ClientConfig struct {
 	ClientID     string   `json:"client_id,omitempty"`
+	Secret       string   `json:"secret,omitempty"`
 	SecretHash   string   `json:"secret_hash,omitempty"`
 	Name         string   `json:"name"`
 	RedirectURIs []string `json:"redirect_uris"`
@@ -176,6 +178,21 @@ func ImportTenantConfig(tenantStore *Store, iamStore *iam.Store, mktStore *marke
 		if c.ClientID != "" && c.SecretHash != "" {
 			// Migration mode: preserve client ID and secret hash.
 			client, err := scopedIAM.CreateClientWithID(c.ClientID, c.SecretHash, c.Name, c.RedirectURIs)
+			if err != nil {
+				return nil, err
+			}
+			clients = append(clients, ClientImported{
+				Name:         client.Name,
+				ClientID:     client.ID,
+				RedirectURIs: client.RedirectURIs,
+			})
+		} else if c.ClientID != "" && c.Secret != "" {
+			// Seed mode with known credentials: hash the plaintext secret.
+			hash, err := bcrypt.GenerateFromPassword([]byte(c.Secret), bcrypt.DefaultCost)
+			if err != nil {
+				return nil, err
+			}
+			client, err := scopedIAM.CreateClientWithID(c.ClientID, string(hash), c.Name, c.RedirectURIs)
 			if err != nil {
 				return nil, err
 			}

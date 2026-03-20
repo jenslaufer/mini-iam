@@ -38,8 +38,8 @@ services:
       OIDC_JWKS_URI: "${OIDC_JWKS_URI}"
       OIDC_AUDIENCE: "${OIDC_AUDIENCE}"
       IAM_INTERNAL_URL: "${IAM_INTERNAL_URL}"
-      IAM_ADMIN_EMAIL: "${IAM_ADMIN_EMAIL}"
-      IAM_ADMIN_PASSWORD: "${IAM_ADMIN_PASSWORD}"
+      OIDC_CLIENT_ID: "${OIDC_CLIENT_ID}"
+      OIDC_CLIENT_SECRET: "${OIDC_CLIENT_SECRET}"
     healthcheck:
       test: ["CMD-SHELL", "python -c 'import urllib.request; urllib.request.urlopen(\"http://localhost:8000/api/health\")'"]
       interval: 10s
