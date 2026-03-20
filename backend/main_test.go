@@ -4417,7 +4417,6 @@ func TestLifecycleTokenSecurity(t *testing.T) {
 		assertStatus(t, resp, http.StatusOK)
 		resp.Body.Close()
 
-		// Attempting activation again must not create a second user.
 		resp2 := doRequest(t, env.srv, "POST", "/activate/"+inviteToken, "",
 			`{"password":"password456"}`)
 		if resp2.StatusCode != http.StatusNotFound {
@@ -4425,7 +4424,6 @@ func TestLifecycleTokenSecurity(t *testing.T) {
 		}
 		resp2.Body.Close()
 
-		// Verify only one login works.
 		loginResp := doJSON(t, env.srv, "/login", map[string]any{
 			"email":    "nodup@test.com",
 			"password": "password123",
@@ -4446,22 +4444,18 @@ func TestLifecycleTokenSecurity(t *testing.T) {
 			t.Fatalf("GetContactByEmail: %v", err)
 		}
 
-		// First unsubscribe.
 		resp1 := doRequest(t, env.srv, "POST", "/unsubscribe/"+contact.UnsubscribeToken, "", "")
 		assertStatus(t, resp1, http.StatusOK)
 		resp1.Body.Close()
 
-		// Second unsubscribe must also return 200 (idempotent).
 		resp2 := doRequest(t, env.srv, "POST", "/unsubscribe/"+contact.UnsubscribeToken, "", "")
 		assertStatus(t, resp2, http.StatusOK)
 		resp2.Body.Close()
 
-		// Third time for good measure.
 		resp3 := doRequest(t, env.srv, "POST", "/unsubscribe/"+contact.UnsubscribeToken, "", "")
 		assertStatus(t, resp3, http.StatusOK)
 		resp3.Body.Close()
 
-		// Verify still unsubscribed.
 		updated, _ := env.store.GetContactByEmail("idempotent@test.com")
 		if !updated.Unsubscribed {
 			t.Error("contact must remain unsubscribed")
@@ -4475,7 +4469,6 @@ func TestLifecycleTokenSecurity(t *testing.T) {
 		createContact(t, env, adminToken, "noaccess@test.com", "No Access")
 		contact, _ := env.store.GetContactByEmail("noaccess@test.com")
 
-		// Unsubscribe token used as activate token must fail.
 		resp := doRequest(t, env.srv, "POST", "/activate/"+contact.UnsubscribeToken, "",
 			`{"password":"password123"}`)
 		if resp.StatusCode == http.StatusOK {
@@ -4496,7 +4489,6 @@ func TestLifecycleTokenSecurity(t *testing.T) {
 			t.Fatal("expected invite_token")
 		}
 
-		// Expire the token by backdating invite_token_expires_at.
 		_, err := env.store.DB().Exec(
 			"UPDATE contacts SET invite_token_expires_at = ? WHERE invite_token = ?",
 			time.Now().Add(-1*time.Hour), inviteToken,
@@ -4505,14 +4497,12 @@ func TestLifecycleTokenSecurity(t *testing.T) {
 			t.Fatalf("backdate invite_token_expires_at: %v", err)
 		}
 
-		// GET with expired token must fail.
 		resp := doGet(t, env.srv, "/activate/"+inviteToken, nil)
 		if resp.StatusCode != http.StatusNotFound {
 			t.Errorf("GET expired token: want 404, got %d", resp.StatusCode)
 		}
 		resp.Body.Close()
 
-		// POST with expired token must fail.
 		resp2 := doRequest(t, env.srv, "POST", "/activate/"+inviteToken, "",
 			`{"password":"password123"}`)
 		if resp2.StatusCode != http.StatusNotFound {
@@ -4531,7 +4521,6 @@ func TestLifecycleTokenSecurity(t *testing.T) {
 			t.Fatal("expected invite_token")
 		}
 
-		// Token should be valid (freshly created).
 		resp := doGet(t, env.srv, "/activate/"+inviteToken, nil)
 		assertStatus(t, resp, http.StatusOK)
 		body := readBody(resp)
@@ -4580,7 +4569,6 @@ func TestLifecycleTokenSecurity(t *testing.T) {
 		c := createContact(t, env, adminToken, "audit3@test.com", "Audit3")
 		contactID, _ := c["id"].(string)
 
-		// Check list response.
 		listResp := doRequest(t, env.srv, "GET", "/admin/contacts", adminToken, "")
 		assertStatus(t, listResp, http.StatusOK)
 		listBody := readBody(listResp)
@@ -4588,7 +4576,6 @@ func TestLifecycleTokenSecurity(t *testing.T) {
 			t.Error("unsubscribe_token must not appear in list contacts response")
 		}
 
-		// Check detail response.
 		detailResp := doRequest(t, env.srv, "GET", "/admin/contacts/"+contactID, adminToken, "")
 		assertStatus(t, detailResp, http.StatusOK)
 		detailBody := readBody(detailResp)
@@ -4601,7 +4588,6 @@ func TestLifecycleTokenSecurity(t *testing.T) {
 		env := newTestEnv(t)
 		adminToken := loginAsAdmin(t, env)
 
-		// Creation response SHOULD contain invite_token (admin needs it).
 		c := createContact(t, env, adminToken, "creation@test.com", "Creation")
 		inviteToken, _ := c["invite_token"].(string)
 		if inviteToken == "" {
