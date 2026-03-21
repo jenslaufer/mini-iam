@@ -132,6 +132,7 @@ func main() {
 	iamHandler := iam.NewHandler(iamStore, registry, issuer)
 	iamHandler.PlatformTenantID = defaultTenantID
 	iamHandler.Registration = tenantStore
+	iamHandler.Mailer = mailer
 	marketingHandler := marketing.NewHandler(marketingStore, iamStore, registry)
 	marketingHandler.PlatformTenantID = defaultTenantID
 	marketingHandler.SetSender(sender)
@@ -164,6 +165,8 @@ func main() {
 
 	// Public endpoints (no auth)
 	mux.HandleFunc("/activate/", iamHandler.Activate)
+	mux.HandleFunc("/forgot-password", iamHandler.ForgotPassword)
+	mux.HandleFunc("/reset-password/", iamHandler.ResetPassword)
 	mux.HandleFunc("/track/", marketingHandler.TrackOpen)
 	mux.HandleFunc("/unsubscribe/", marketingHandler.Unsubscribe)
 
@@ -296,6 +299,8 @@ func migrate(db *sql.DB) error {
 		name TEXT NOT NULL,
 		role TEXT NOT NULL DEFAULT 'user',
 		created_at DATETIME NOT NULL,
+		reset_token TEXT,
+		reset_token_expires_at DATETIME,
 		UNIQUE(tenant_id, email)
 	);
 
