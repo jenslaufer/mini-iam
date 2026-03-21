@@ -5487,3 +5487,42 @@ func TestLoginRateLimited(t *testing.T) {
 		t.Fatal("missing Retry-After header")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// floatEnvOr
+// ---------------------------------------------------------------------------
+
+func TestFloatEnvOrDefault(t *testing.T) {
+	t.Setenv("TEST_FLOAT_UNSET", "")
+	if v := floatEnvOr("TEST_FLOAT_UNSET", 42); v != 42 {
+		t.Fatalf("got %f, want 42", v)
+	}
+}
+
+func TestFloatEnvOrValid(t *testing.T) {
+	t.Setenv("TEST_FLOAT_VALID", "99.5")
+	if v := floatEnvOr("TEST_FLOAT_VALID", 10); v != 99.5 {
+		t.Fatalf("got %f, want 99.5", v)
+	}
+}
+
+func TestFloatEnvOrZeroFallsBack(t *testing.T) {
+	t.Setenv("TEST_FLOAT_ZERO", "0")
+	if v := floatEnvOr("TEST_FLOAT_ZERO", 10); v != 10 {
+		t.Fatalf("got %f, want 10 (fallback)", v)
+	}
+}
+
+func TestFloatEnvOrNegativeFallsBack(t *testing.T) {
+	t.Setenv("TEST_FLOAT_NEG", "-5")
+	if v := floatEnvOr("TEST_FLOAT_NEG", 10); v != 10 {
+		t.Fatalf("got %f, want 10 (fallback)", v)
+	}
+}
+
+func TestFloatEnvOrInvalidFallsBack(t *testing.T) {
+	t.Setenv("TEST_FLOAT_BAD", "abc")
+	if v := floatEnvOr("TEST_FLOAT_BAD", 10); v != 10 {
+		t.Fatalf("got %f, want 10 (fallback)", v)
+	}
+}

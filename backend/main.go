@@ -229,12 +229,16 @@ func main() {
 	mux.HandleFunc("/admin/tenants/import-batch", exportImportHandler.ImportBatch)
 	mux.HandleFunc("/admin/tenants/", exportImportHandler.ExportOrDelete)
 
-	// Rate limiter for auth endpoints
+	// Rate limiter for auth endpoints (configurable via env for testing)
+	loginRate := floatEnvOr("RATE_LIMIT_LOGIN", 10)
+	registerRate := floatEnvOr("RATE_LIMIT_REGISTER", 5)
+	forgotRate := floatEnvOr("RATE_LIMIT_FORGOT_PASSWORD", 3)
+	tokenRate := floatEnvOr("RATE_LIMIT_TOKEN", 20)
 	rateLimiter := NewRateLimiter(map[string]float64{
-		"/login":           10,
-		"/register":        5,
-		"/forgot-password": 3,
-		"/token":           20,
+		"/login":           loginRate,
+		"/register":        registerRate,
+		"/forgot-password": forgotRate,
+		"/token":           tokenRate,
 	}, 5*time.Minute)
 
 	// Wrap with rate limiter, tenant middleware, then CORS + security headers
@@ -262,6 +266,18 @@ func parseTenantConfigs(data []byte) ([]tenant.ImportConfig, error) {
 		return nil, err
 	}
 	return []tenant.ImportConfig{cfg}, nil
+}
+
+func floatEnvOr(key string, fallback float64) float64 {
+	if v := os.Getenv(key); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil {
+			if f > 0 {
+				return f
+			}
+			log.Printf("WARNING: %s=%s must be positive, using default %.0f", key, v, fallback)
+		}
+	}
+	return fallback
 }
 
 func envOr(key, fallback string) string {

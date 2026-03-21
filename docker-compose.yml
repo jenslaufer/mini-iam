@@ -12,6 +12,10 @@ services:
       ADMIN_PASSWORD: "${ADMIN_PASSWORD}"
       DEFAULT_TENANT: "${DEFAULT_TENANT}"
       DEFAULT_TENANT_REGISTRATION: "${DEFAULT_TENANT_REGISTRATION:-}"
+      RATE_LIMIT_LOGIN: "${RATE_LIMIT_LOGIN:-}"
+      RATE_LIMIT_REGISTER: "${RATE_LIMIT_REGISTER:-}"
+      RATE_LIMIT_FORGOT_PASSWORD: "${RATE_LIMIT_FORGOT_PASSWORD:-}"
+      RATE_LIMIT_TOKEN: "${RATE_LIMIT_TOKEN:-}"
     healthcheck:
       test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:8080/health || exit 1"]
       interval: 30s
