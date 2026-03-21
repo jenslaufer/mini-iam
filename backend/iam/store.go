@@ -620,3 +620,80 @@ func (s *Store) GetContactByInviteToken(token string) (email string, activated b
 	}
 	return c.email, c.userID != nil, nil
 }
+
+// --- Password Reset ---
+
+const ResetTokenTTL = 1 * time.Hour
+
+// CreateResetToken generates a reset token for the user with the given email.
+// Returns the token string. Returns an error if the user is not found.
+func (s *Store) CreateResetToken(email string) (string, error) {
+	user, err := s.GetUserByEmail(email)
+	if err != nil {
+		return "", err
+	}
+
+	token := uuid.NewString()
+	expiresAt := time.Now().UTC().Add(ResetTokenTTL)
+	_, err = s.db.Exec(
+		"UPDATE users SET reset_token = ?, reset_token_expires_at = ? WHERE id = ? AND tenant_id = ?",
+		token, expiresAt, user.ID, s.tenantID,
+	)
+	if err != nil {
+		return "", err
+	}
+	return token, nil
+}
+
+// ResetTokenRateLimited returns true if a reset token was created for this email
+// within the last 5 minutes.
+func (s *Store) ResetTokenRateLimited(email string) bool {
+	var count int
+	err := s.db.QueryRow(
+		`SELECT COUNT(*) FROM users WHERE email = ? AND tenant_id = ?
+		   AND reset_token IS NOT NULL AND reset_token_expires_at > ?`,
+		email, s.tenantID, time.Now().UTC().Add(-5*time.Minute).Add(ResetTokenTTL),
+	).Scan(&count)
+	return err == nil && count > 0
+}
+
+// GetUserByResetToken returns the user associated with a valid, non-expired reset token.
+func (s *Store) GetUserByResetToken(token string) (*User, error) {
+	u := &User{}
+	err := s.db.QueryRow(
+		`SELECT id, tenant_id, email, password_hash, name, role, created_at FROM users
+		 WHERE reset_token = ? AND tenant_id = ? AND reset_token_expires_at > ?`,
+		token, s.tenantID, time.Now().UTC(),
+	).Scan(&u.ID, &u.TenantID, &u.Email, &u.PasswordHash, &u.Name, &u.Role, &u.CreatedAt)
+	if err != nil {
+		return nil, err
+	}
+	return u, nil
+}
+
+// ConsumeResetToken validates the token, updates the password, and nullifies the token.
+func (s *Store) ConsumeResetToken(token, newPassword string) (*User, error) {
+	user, err := s.GetUserByResetToken(token)
+	if err != nil {
+		return nil, fmt.Errorf("invalid or expired reset token")
+	}
+
+	hash, err := bcrypt.GenerateFromPassword([]byte(newPassword), bcrypt.DefaultCost)
+	if err != nil {
+		return nil, err
+	}
+
+	result, err := s.db.Exec(
+		`UPDATE users SET password_hash = ?, reset_token = NULL, reset_token_expires_at = NULL
+		 WHERE id = ? AND tenant_id = ? AND reset_token = ?`,
+		string(hash), user.ID, s.tenantID, token,
+	)
+	if err != nil {
+		return nil, err
+	}
+	rows, _ := result.RowsAffected()
+	if rows == 0 {
+		return nil, fmt.Errorf("invalid or expired reset token")
+	}
+	return user, nil
+}

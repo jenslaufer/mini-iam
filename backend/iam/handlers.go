@@ -24,6 +24,12 @@ type Handler struct {
 	Issuer           string
 	PlatformTenantID string
 	Registration     RegistrationPolicy // nil = registration always allowed
+	Mailer           Mailer
+}
+
+// Mailer sends emails. Matches marketing.Mailer interface.
+type Mailer interface {
+	Send(to, subject, htmlBody string, headers map[string]string) error
 }
 
 func NewHandler(store *Store, registry *TokenRegistry, issuer string) *Handler {
@@ -1206,6 +1212,174 @@ button:hover{background:#1d4ed8}
 </head><body><div>
 <h2>Account Activated</h2>
 <p>Your account has been created. You can now sign in.</p>
+</div></body></html>`))
+		}
+
+	default:
+		WriteError(w, http.StatusMethodNotAllowed, "invalid_request", "method not allowed")
+	}
+}
+
+// ForgotPassword initiates a password reset by sending an email with a reset link.
+// POST /forgot-password — always returns 200 to prevent email enumeration.
+func (h *Handler) ForgotPassword(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		WriteError(w, http.StatusMethodNotAllowed, "invalid_request", "method not allowed")
+		return
+	}
+
+	var req struct {
+		Email string `json:"email"`
+	}
+	if !DecodeJSON(w, r, &req) {
+		return
+	}
+
+	store := h.tenantStore(r)
+
+	// Always return 200 regardless of outcome
+	defer func() {
+		WriteJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	}()
+
+	if req.Email == "" {
+		return
+	}
+
+	// Rate limit: skip if a token was created recently
+	if store.ResetTokenRateLimited(req.Email) {
+		return
+	}
+
+	token, err := store.CreateResetToken(req.Email)
+	if err != nil {
+		return // user not found — silently succeed
+	}
+
+	if h.Mailer == nil {
+		return
+	}
+
+	issuer := h.tenantIssuer(r)
+	resetURL := issuer + "/reset-password/" + token
+	body := fmt.Sprintf(`<!DOCTYPE html><html><body>
+<p>Click the link below to reset your password:</p>
+<p><a href="%s">%s</a></p>
+<p>This link expires in 1 hour.</p>
+</body></html>`, html.EscapeString(resetURL), html.EscapeString(resetURL))
+
+	h.Mailer.Send(req.Email, "Reset your password", body, nil)
+}
+
+// ResetPassword handles the password reset form and submission.
+// GET  /reset-password/{token} — renders an HTML password form.
+// POST /reset-password/{token} — sets the new password.
+func (h *Handler) ResetPassword(w http.ResponseWriter, r *http.Request) {
+	token := strings.TrimPrefix(r.URL.Path, "/reset-password/")
+	if token == "" {
+		WriteError(w, http.StatusBadRequest, "invalid_request", "token required")
+		return
+	}
+
+	store := h.tenantStore(r)
+
+	switch r.Method {
+	case http.MethodGet:
+		user, err := store.GetUserByResetToken(token)
+		if err != nil {
+			w.Header().Set("Content-Type", "text/html")
+			w.WriteHeader(http.StatusNotFound)
+			w.Write([]byte(`<!DOCTYPE html><html><head><title>launch-kit</title>
+<style>body{font-family:system-ui,sans-serif;display:flex;justify-content:center;align-items:center;min-height:100vh;margin:0;background:#f5f5f5}form{background:#fff;padding:2rem;border-radius:8px;box-shadow:0 2px 8px rgba(0,0,0,0.1);width:320px;text-align:center}h2{margin-top:0}</style>
+</head><body><form><h2>Invalid or expired reset link.</h2></form></body></html>`))
+			return
+		}
+		w.Header().Set("Content-Type", "text/html")
+		fmt.Fprintf(w, `<!DOCTYPE html>
+<html><head><title>Reset Password - launch-kit</title>
+<style>
+body{font-family:system-ui,sans-serif;display:flex;justify-content:center;align-items:center;min-height:100vh;margin:0;background:#f5f5f5}
+form{background:#fff;padding:2rem;border-radius:8px;box-shadow:0 2px 8px rgba(0,0,0,0.1);width:320px}
+h2{margin-top:0;text-align:center}
+label{display:block;margin-top:1rem;font-size:0.9rem;color:#333}
+input[type=password]{width:100%%;padding:0.5rem;margin-top:0.25rem;border:1px solid #ccc;border-radius:4px;box-sizing:border-box}
+button{width:100%%;padding:0.75rem;margin-top:1.5rem;background:#2563eb;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:1rem}
+button:hover{background:#1d4ed8}
+</style></head><body>
+<form method="POST">
+<h2>Reset Password</h2>
+<p style="text-align:center;color:#666;font-size:0.9rem">%s</p>
+<label>New Password</label><input type="password" name="password" required minlength="8" autofocus>
+<label>Confirm Password</label><input type="password" name="confirm" required minlength="8">
+<button type="submit">Reset Password</button>
+</form></body></html>`, html.EscapeString(user.Email))
+
+	case http.MethodPost:
+		var password string
+		ct := r.Header.Get("Content-Type")
+		isJSON := strings.Contains(ct, "application/json")
+		if isJSON {
+			var req struct {
+				Password string `json:"password"`
+			}
+			if !DecodeJSON(w, r, &req) {
+				return
+			}
+			password = req.Password
+		} else {
+			if err := r.ParseForm(); err != nil {
+				WriteError(w, http.StatusBadRequest, "invalid_request", "invalid form data")
+				return
+			}
+			password = r.FormValue("password")
+			confirm := r.FormValue("confirm")
+			if password != confirm {
+				w.Header().Set("Content-Type", "text/html")
+				w.WriteHeader(http.StatusBadRequest)
+				w.Write([]byte(`<!DOCTYPE html><html><head><title>launch-kit</title>
+<style>body{font-family:system-ui,sans-serif;display:flex;justify-content:center;align-items:center;min-height:100vh;margin:0;background:#f5f5f5}div{background:#fff;padding:2rem;border-radius:8px;box-shadow:0 2px 8px rgba(0,0,0,0.1);width:320px;text-align:center}</style>
+</head><body><div><h2>Passwords do not match</h2><p><a href="javascript:history.back()">Try again</a></p></div></body></html>`))
+				return
+			}
+		}
+
+		if len(password) < 8 {
+			if isJSON {
+				WriteError(w, http.StatusBadRequest, "invalid_request", "password must be at least 8 characters")
+			} else {
+				w.Header().Set("Content-Type", "text/html")
+				w.WriteHeader(http.StatusBadRequest)
+				w.Write([]byte(`<!DOCTYPE html><html><head><title>launch-kit</title>
+<style>body{font-family:system-ui,sans-serif;display:flex;justify-content:center;align-items:center;min-height:100vh;margin:0;background:#f5f5f5}div{background:#fff;padding:2rem;border-radius:8px;box-shadow:0 2px 8px rgba(0,0,0,0.1);width:320px;text-align:center}</style>
+</head><body><div><h2>Password too short</h2><p>Password must be at least 8 characters.</p><p><a href="javascript:history.back()">Try again</a></p></div></body></html>`))
+			}
+			return
+		}
+
+		_, err := store.ConsumeResetToken(token, password)
+		if err != nil {
+			if isJSON {
+				WriteError(w, http.StatusNotFound, "not_found", "invalid or expired reset link")
+			} else {
+				w.Header().Set("Content-Type", "text/html")
+				w.WriteHeader(http.StatusNotFound)
+				w.Write([]byte(`<!DOCTYPE html><html><head><title>launch-kit</title>
+<style>body{font-family:system-ui,sans-serif;display:flex;justify-content:center;align-items:center;min-height:100vh;margin:0;background:#f5f5f5}div{background:#fff;padding:2rem;border-radius:8px;box-shadow:0 2px 8px rgba(0,0,0,0.1);width:320px;text-align:center}</style>
+</head><body><div><h2>Invalid or expired reset link.</h2></div></body></html>`))
+			}
+			return
+		}
+
+		if isJSON {
+			WriteJSON(w, http.StatusOK, map[string]string{"status": "password_reset"})
+		} else {
+			w.Header().Set("Content-Type", "text/html")
+			w.Write([]byte(`<!DOCTYPE html>
+<html><head><title>Password Reset - launch-kit</title>
+<style>body{font-family:system-ui,sans-serif;display:flex;justify-content:center;align-items:center;min-height:100vh;margin:0;background:#f5f5f5}div{background:#fff;padding:2rem;border-radius:8px;box-shadow:0 2px 8px rgba(0,0,0,0.1);width:320px;text-align:center}</style>
+</head><body><div>
+<h2>Password Reset</h2>
+<p>Your password has been reset. You can now sign in.</p>
 </div></body></html>`))
 		}
 

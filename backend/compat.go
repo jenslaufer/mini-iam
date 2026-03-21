@@ -93,6 +93,11 @@ func NewHandler(store *Store, tokens *iam.TokenService, issuer string) *Handler 
 	}
 }
 
+// SetMailer sets the mailer on the iam handler for password reset emails.
+func (h *Handler) SetMailer(m marketing.Mailer) {
+	h.iam.Mailer = m
+}
+
 // syncSender propagates h.sender to the marketing handler before any call that
 // needs it. This handles the test pattern: h.sender = sender (direct assignment).
 func (h *Handler) syncSender() {
@@ -116,7 +121,9 @@ func (h *Handler) AdminListUsers(w http.ResponseWriter, r *http.Request)  { h.ia
 func (h *Handler) AdminUserByID(w http.ResponseWriter, r *http.Request)   { h.iam.AdminUserByID(w, r) }
 func (h *Handler) AdminListClients(w http.ResponseWriter, r *http.Request) { h.iam.AdminListClients(w, r) }
 func (h *Handler) AdminDeleteClient(w http.ResponseWriter, r *http.Request) { h.iam.AdminDeleteClient(w, r) }
-func (h *Handler) Activate(w http.ResponseWriter, r *http.Request)   { h.iam.Activate(w, r) }
+func (h *Handler) Activate(w http.ResponseWriter, r *http.Request)        { h.iam.Activate(w, r) }
+func (h *Handler) ForgotPassword(w http.ResponseWriter, r *http.Request)  { h.iam.ForgotPassword(w, r) }
+func (h *Handler) ResetPassword(w http.ResponseWriter, r *http.Request)   { h.iam.ResetPassword(w, r) }
 
 // Marketing handler methods
 func (h *Handler) AdminContacts(w http.ResponseWriter, r *http.Request) {

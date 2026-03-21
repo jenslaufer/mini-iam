@@ -37,7 +37,8 @@ func newRoutingDB(t *testing.T) *sql.DB {
 	CREATE TABLE IF NOT EXISTS users (
 		id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL DEFAULT '', email TEXT NOT NULL,
 		password_hash TEXT NOT NULL, name TEXT NOT NULL, role TEXT NOT NULL DEFAULT 'user',
-		created_at DATETIME NOT NULL, UNIQUE(tenant_id, email)
+		created_at DATETIME NOT NULL, reset_token TEXT, reset_token_expires_at DATETIME,
+		UNIQUE(tenant_id, email)
 	);
 	CREATE TABLE IF NOT EXISTS clients (
 		id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL DEFAULT '', secret_hash TEXT NOT NULL,

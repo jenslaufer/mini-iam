@@ -67,6 +67,8 @@ func SetupServer(store *Store, tokenService *TokenService) http.Handler {
 	mux.HandleFunc("/track/", h.TrackOpen)
 	mux.HandleFunc("/unsubscribe/", h.Unsubscribe)
 	mux.HandleFunc("/activate/", h.Activate)
+	mux.HandleFunc("/forgot-password", h.ForgotPassword)
+	mux.HandleFunc("/reset-password/", h.ResetPassword)
 
 	return CORSMiddleware("*")(mux)
 }
@@ -4011,6 +4013,7 @@ func newTestEnvWithMailer(t *testing.T, mailer Mailer) *testEnv {
 	sender := NewCampaignSender(store, mailer, issuer, 0)
 	sender.StartSync()
 	h.sender = sender
+	h.SetMailer(mailer)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", h.Health)
@@ -4037,6 +4040,8 @@ func newTestEnvWithMailer(t *testing.T, mailer Mailer) *testEnv {
 	mux.HandleFunc("/track/", h.TrackOpen)
 	mux.HandleFunc("/unsubscribe/", h.Unsubscribe)
 	mux.HandleFunc("/activate/", h.Activate)
+	mux.HandleFunc("/forgot-password", h.ForgotPassword)
+	mux.HandleFunc("/reset-password/", h.ResetPassword)
 
 	srv := httptest.NewServer(CORSMiddleware("*")(mux))
 	t.Cleanup(func() {
@@ -5051,4 +5056,242 @@ func TestUserTokenStillWorks(t *testing.T) {
 			}
 		})
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Password Reset Tests
+// ---------------------------------------------------------------------------
+
+func TestForgotPasswordSendsEmail(t *testing.T) {
+	capMailer := &CapturingMailer{}
+	env := newTestEnvWithMailer(t, capMailer)
+
+	// Register a user
+	resp := doJSON(t, env.srv, "/register", map[string]any{
+		"email": "reset@example.com", "password": "password123", "name": "Reset User",
+	})
+	assertStatus(t, resp, http.StatusCreated)
+	resp.Body.Close()
+
+	// Request password reset
+	resp = doJSON(t, env.srv, "/forgot-password", map[string]any{
+		"email": "reset@example.com",
+	})
+	assertStatus(t, resp, http.StatusOK)
+	resp.Body.Close()
+
+	// Check email was sent
+	if len(capMailer.mails) == 0 {
+		t.Fatal("expected a reset email to be sent")
+	}
+	mail := capMailer.mails[len(capMailer.mails)-1]
+	if mail.To != "reset@example.com" {
+		t.Errorf("expected email to reset@example.com, got %s", mail.To)
+	}
+	if mail.Subject != "Reset your password" {
+		t.Errorf("expected subject 'Reset your password', got %s", mail.Subject)
+	}
+	if !strings.Contains(mail.Body, "/reset-password/") {
+		t.Error("expected email body to contain reset link")
+	}
+}
+
+func TestForgotPasswordUnknownEmailReturns200(t *testing.T) {
+	capMailer := &CapturingMailer{}
+	env := newTestEnvWithMailer(t, capMailer)
+
+	resp := doJSON(t, env.srv, "/forgot-password", map[string]any{
+		"email": "nonexistent@example.com",
+	})
+	assertStatus(t, resp, http.StatusOK)
+	resp.Body.Close()
+
+	// No email should have been sent
+	if len(capMailer.mails) != 0 {
+		t.Errorf("expected no email sent for unknown address, got %d", len(capMailer.mails))
+	}
+}
+
+func TestResetPasswordSuccess(t *testing.T) {
+	capMailer := &CapturingMailer{}
+	env := newTestEnvWithMailer(t, capMailer)
+
+	// Register user
+	resp := doJSON(t, env.srv, "/register", map[string]any{
+		"email": "resetok@example.com", "password": "oldpass123", "name": "Reset OK",
+	})
+	assertStatus(t, resp, http.StatusCreated)
+	resp.Body.Close()
+
+	// Request reset
+	resp = doJSON(t, env.srv, "/forgot-password", map[string]any{"email": "resetok@example.com"})
+	assertStatus(t, resp, http.StatusOK)
+	resp.Body.Close()
+
+	// Extract token from email
+	mail := capMailer.mails[len(capMailer.mails)-1]
+	idx := strings.Index(mail.Body, "/reset-password/")
+	if idx == -1 {
+		t.Fatal("reset link not found in email")
+	}
+	tokenStart := idx + len("/reset-password/")
+	token := mail.Body[tokenStart : tokenStart+36] // UUID length
+
+	// Reset password via JSON
+	resp = doJSON(t, env.srv, "/reset-password/"+token, map[string]any{
+		"password": "newpass123",
+	})
+	assertStatus(t, resp, http.StatusOK)
+	var result map[string]string
+	decodeJSON(t, resp, &result)
+	if result["status"] != "password_reset" {
+		t.Errorf("expected status password_reset, got %s", result["status"])
+	}
+
+	// Login with new password should work
+	resp = doJSON(t, env.srv, "/login", map[string]any{
+		"email": "resetok@example.com", "password": "newpass123",
+	})
+	assertStatus(t, resp, http.StatusOK)
+	resp.Body.Close()
+
+	// Login with old password should fail
+	resp = doJSON(t, env.srv, "/login", map[string]any{
+		"email": "resetok@example.com", "password": "oldpass123",
+	})
+	if resp.StatusCode == http.StatusOK {
+		t.Error("expected old password to be rejected")
+	}
+	resp.Body.Close()
+}
+
+func TestResetPasswordExpiredToken(t *testing.T) {
+	capMailer := &CapturingMailer{}
+	env := newTestEnvWithMailer(t, capMailer)
+
+	// Register user
+	resp := doJSON(t, env.srv, "/register", map[string]any{
+		"email": "expired@example.com", "password": "password123", "name": "Expired",
+	})
+	assertStatus(t, resp, http.StatusCreated)
+	resp.Body.Close()
+
+	// Request reset
+	resp = doJSON(t, env.srv, "/forgot-password", map[string]any{"email": "expired@example.com"})
+	assertStatus(t, resp, http.StatusOK)
+	resp.Body.Close()
+
+	// Extract token
+	mail := capMailer.mails[len(capMailer.mails)-1]
+	idx := strings.Index(mail.Body, "/reset-password/")
+	token := mail.Body[idx+len("/reset-password/") : idx+len("/reset-password/")+36]
+
+	// Backdate the token expiry
+	env.store.DB().Exec("UPDATE users SET reset_token_expires_at = ? WHERE email = ?",
+		time.Now().UTC().Add(-1*time.Hour), "expired@example.com")
+
+	// Try to reset — should fail
+	resp = doJSON(t, env.srv, "/reset-password/"+token, map[string]any{"password": "newpass123"})
+	assertStatus(t, resp, http.StatusNotFound)
+	resp.Body.Close()
+}
+
+func TestResetPasswordSingleUse(t *testing.T) {
+	capMailer := &CapturingMailer{}
+	env := newTestEnvWithMailer(t, capMailer)
+
+	// Register user
+	resp := doJSON(t, env.srv, "/register", map[string]any{
+		"email": "singleuse@example.com", "password": "password123", "name": "Single Use",
+	})
+	assertStatus(t, resp, http.StatusCreated)
+	resp.Body.Close()
+
+	// Request reset
+	resp = doJSON(t, env.srv, "/forgot-password", map[string]any{"email": "singleuse@example.com"})
+	assertStatus(t, resp, http.StatusOK)
+	resp.Body.Close()
+
+	// Extract token
+	mail := capMailer.mails[len(capMailer.mails)-1]
+	idx := strings.Index(mail.Body, "/reset-password/")
+	token := mail.Body[idx+len("/reset-password/") : idx+len("/reset-password/")+36]
+
+	// First use — should succeed
+	resp = doJSON(t, env.srv, "/reset-password/"+token, map[string]any{"password": "newpass123"})
+	assertStatus(t, resp, http.StatusOK)
+	resp.Body.Close()
+
+	// Second use — should fail
+	resp = doJSON(t, env.srv, "/reset-password/"+token, map[string]any{"password": "anotherpass"})
+	assertStatus(t, resp, http.StatusNotFound)
+	resp.Body.Close()
+}
+
+func TestResetPasswordGetForm(t *testing.T) {
+	capMailer := &CapturingMailer{}
+	env := newTestEnvWithMailer(t, capMailer)
+
+	// Register user
+	resp := doJSON(t, env.srv, "/register", map[string]any{
+		"email": "formtest@example.com", "password": "password123", "name": "Form Test",
+	})
+	assertStatus(t, resp, http.StatusCreated)
+	resp.Body.Close()
+
+	// Request reset
+	resp = doJSON(t, env.srv, "/forgot-password", map[string]any{"email": "formtest@example.com"})
+	assertStatus(t, resp, http.StatusOK)
+	resp.Body.Close()
+
+	// Extract token
+	mail := capMailer.mails[len(capMailer.mails)-1]
+	idx := strings.Index(mail.Body, "/reset-password/")
+	token := mail.Body[idx+len("/reset-password/") : idx+len("/reset-password/")+36]
+
+	// GET form
+	resp = doGet(t, env.srv, "/reset-password/"+token, nil)
+	assertStatus(t, resp, http.StatusOK)
+	body := readBody(resp)
+
+	if !strings.Contains(body, "text/html") || !strings.Contains(body, "Reset Password") {
+		// Check Content-Type header instead
+		ct := resp.Header.Get("Content-Type")
+		if !strings.Contains(ct, "text/html") {
+			t.Errorf("expected text/html content type, got %s", ct)
+		}
+	}
+	if !strings.Contains(body, "formtest@example.com") {
+		t.Error("expected email to be shown in form")
+	}
+	if !strings.Contains(body, "password") {
+		t.Error("expected password input in form")
+	}
+}
+
+func TestResetPasswordShortPassword(t *testing.T) {
+	capMailer := &CapturingMailer{}
+	env := newTestEnvWithMailer(t, capMailer)
+
+	// Register user
+	resp := doJSON(t, env.srv, "/register", map[string]any{
+		"email": "shortpw@example.com", "password": "password123", "name": "Short PW",
+	})
+	assertStatus(t, resp, http.StatusCreated)
+	resp.Body.Close()
+
+	// Request reset
+	resp = doJSON(t, env.srv, "/forgot-password", map[string]any{"email": "shortpw@example.com"})
+	assertStatus(t, resp, http.StatusOK)
+	resp.Body.Close()
+
+	// Extract token
+	mail := capMailer.mails[len(capMailer.mails)-1]
+	idx := strings.Index(mail.Body, "/reset-password/")
+	token := mail.Body[idx+len("/reset-password/") : idx+len("/reset-password/")+36]
+
+	// Try short password
+	resp = doJSON(t, env.srv, "/reset-password/"+token, map[string]any{"password": "short"})
+	assertStatus(t, resp, http.StatusBadRequest)
+	resp.Body.Close()
 }
