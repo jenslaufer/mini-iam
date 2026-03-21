@@ -71,6 +71,12 @@ func SetupServer(store *Store, tokenService *TokenService) http.Handler {
 	return CORSMiddleware("*")(mux)
 }
 
+// SetupServerWithRateLimit is like SetupServer but adds rate limiting middleware.
+func SetupServerWithRateLimit(store *Store, tokenService *TokenService, rl *RateLimiter) http.Handler {
+	base := SetupServer(store, tokenService)
+	return rl.Middleware(base)
+}
+
 // ---------------------------------------------------------------------------
 // Test helpers
 // ---------------------------------------------------------------------------
@@ -4955,5 +4961,51 @@ func TestImportTenantWithFixedClientID(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("expected client with fixed ID 00000000-0000-0000-0000-000000000001, got %v", result.Clients)
+	}
+}
+
+func TestLoginRateLimited(t *testing.T) {
+	store, err := NewStore(":memory:")
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	if err := store.SeedAdmin("admin@test.com", "adminpass123", "Admin"); err != nil {
+		t.Fatalf("SeedAdmin: %v", err)
+	}
+	rsaKey, err := store.LoadOrCreateRSAKey()
+	if err != nil {
+		t.Fatalf("LoadOrCreateRSAKey: %v", err)
+	}
+	tokenSvc := NewTokenService(rsaKey, "http://test-issuer")
+
+	rl := NewRateLimiter(map[string]float64{"/login": 10}, 5*time.Minute)
+	defer rl.Stop()
+
+	srv := httptest.NewServer(SetupServerWithRateLimit(store, tokenSvc, rl))
+	defer srv.Close()
+
+	body := `{"email":"admin@test.com","password":"adminpass123"}`
+	for i := 0; i < 10; i++ {
+		resp, err := http.Post(srv.URL+"/login", "application/json", strings.NewReader(body))
+		if err != nil {
+			t.Fatalf("request %d: %v", i+1, err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("request %d: got %d, want 200", i+1, resp.StatusCode)
+		}
+	}
+
+	// 11th request should be rate limited
+	resp, err := http.Post(srv.URL+"/login", "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("request 11: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("request 11: got %d, want 429", resp.StatusCode)
+	}
+	if resp.Header.Get("Retry-After") == "" {
+		t.Fatal("missing Retry-After header")
 	}
 }

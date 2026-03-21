@@ -10,6 +10,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/jenslaufer/launch-kit/iam"
 	"github.com/jenslaufer/launch-kit/marketing"
@@ -223,8 +224,16 @@ func main() {
 	mux.HandleFunc("/admin/tenants/import-batch", exportImportHandler.ImportBatch)
 	mux.HandleFunc("/admin/tenants/", exportImportHandler.ExportOrDelete)
 
-	// Wrap with tenant middleware (path prefix + X-Tenant header), then CORS
-	handler := SecurityHeadersMiddleware(CORSMiddleware(corsOrigins)(tenant.Middleware(tenantStore, defaultTenantID)(mux)))
+	// Rate limiter for auth endpoints
+	rateLimiter := NewRateLimiter(map[string]float64{
+		"/login":           10,
+		"/register":        5,
+		"/forgot-password": 3,
+		"/token":           20,
+	}, 5*time.Minute)
+
+	// Wrap with rate limiter, tenant middleware, then CORS + security headers
+	handler := SecurityHeadersMiddleware(CORSMiddleware(corsOrigins)(rateLimiter.Middleware(tenant.Middleware(tenantStore, defaultTenantID)(mux))))
 
 	log.Printf("launch-kit starting on :%s (issuer: %s)", port, issuer)
 	if err := http.ListenAndServe(":"+port, handler); err != nil {
