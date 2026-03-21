@@ -134,6 +134,13 @@ func newRoutingEnv(t *testing.T) *routingEnv {
 	mux.HandleFunc("/track/", mktHandler.TrackOpen)
 	mux.HandleFunc("/unsubscribe/", mktHandler.Unsubscribe)
 	mux.HandleFunc("/admin/users", iamHandler.AdminListUsers)
+	mux.HandleFunc("/admin/contacts/import", mktHandler.AdminImportContacts)
+	mux.HandleFunc("/admin/contacts", mktHandler.AdminContacts)
+	mux.HandleFunc("/admin/contacts/", mktHandler.AdminContactByID)
+	mux.HandleFunc("/admin/segments", mktHandler.AdminSegments)
+	mux.HandleFunc("/admin/segments/", mktHandler.AdminSegmentByID)
+	mux.HandleFunc("/admin/campaigns", mktHandler.AdminCampaigns)
+	mux.HandleFunc("/admin/campaigns/", mktHandler.AdminCampaignByID)
 
 	// Middleware handles both /t/{slug}/... path prefix and X-Tenant header
 	handler := tenant.Middleware(tenantStore, "")(mux)
@@ -505,5 +512,158 @@ func TestPlatformAdminCanAccessOtherTenantUsers(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		b, _ := io.ReadAll(resp.Body)
 		t.Errorf("platform admin accessing other tenant users: status = %d, want 200, body = %s", resp.StatusCode, b)
+	}
+}
+
+// marketingTenantEnv creates two tenants with admin users and a wired server
+// for marketing endpoint routing tests. Returns the server, slugs, and tokens.
+func marketingTenantEnv(t *testing.T) (srv *httptest.Server, slugA, slugB, tokenA, tokenB string) {
+	t.Helper()
+	db := newRoutingDB(t)
+	tenantStore := tenant.NewStore(db)
+	iamStore := iam.NewStore(db)
+	mktStore := marketing.NewStore(db)
+
+	tnA, _ := tenantStore.Create("tenant-a", "Tenant A")
+	tnB, _ := tenantStore.Create("tenant-b", "Tenant B")
+
+	iamStore.ForTenant(tnA.ID).SeedAdmin("admin-a@test.com", "pass123", "Admin A")
+	iamStore.ForTenant(tnB.ID).SeedAdmin("admin-b@test.com", "pass123", "Admin B")
+
+	registry := iam.NewTokenRegistry(iamStore, "http://test-issuer")
+	iamHandler := iam.NewHandler(iamStore, registry, "http://test-issuer")
+	mktHandler := marketing.NewHandler(mktStore, iamStore, registry)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/login", iamHandler.Login)
+	mux.HandleFunc("/admin/contacts", mktHandler.AdminContacts)
+	mux.HandleFunc("/admin/segments", mktHandler.AdminSegments)
+	mux.HandleFunc("/admin/campaigns", mktHandler.AdminCampaigns)
+
+	handler := tenant.Middleware(tenantStore, "")(mux)
+	srv = httptest.NewServer(handler)
+	t.Cleanup(srv.Close)
+
+	login := func(slug, email string) string {
+		body := `{"email":"` + email + `","password":"pass123"}`
+		resp, err := http.Post(srv.URL+"/t/"+slug+"/login", "application/json", strings.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		var tok struct {
+			AccessToken string `json:"access_token"`
+		}
+		json.NewDecoder(resp.Body).Decode(&tok)
+		if tok.AccessToken == "" {
+			t.Fatalf("login failed for %s on %s", email, slug)
+		}
+		return tok.AccessToken
+	}
+
+	tokenA = login("tenant-a", "admin-a@test.com")
+	tokenB = login("tenant-b", "admin-b@test.com")
+	return srv, "tenant-a", "tenant-b", tokenA, tokenB
+}
+
+func TestMarketingEndpointsTenantRouting(t *testing.T) {
+	srv, slugA, slugB, tokenA, tokenB := marketingTenantEnv(t)
+
+	createContact := func(slug, token, email string) {
+		body := `{"email":"` + email + `","name":"Test"}`
+		req, _ := http.NewRequest("POST", srv.URL+"/t/"+slug+"/admin/contacts", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+token)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusCreated {
+			b, _ := io.ReadAll(resp.Body)
+			t.Fatalf("create contact on %s: status %d, body %s", slug, resp.StatusCode, b)
+		}
+	}
+
+	// Create contacts in each tenant
+	createContact(slugA, tokenA, "alice@a.com")
+	createContact(slugA, tokenA, "bob@a.com")
+	createContact(slugB, tokenB, "carol@b.com")
+
+	listContacts := func(slug, token string) []map[string]interface{} {
+		req, _ := http.NewRequest("GET", srv.URL+"/t/"+slug+"/admin/contacts", nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			b, _ := io.ReadAll(resp.Body)
+			t.Fatalf("list contacts on %s: status %d, body %s", slug, resp.StatusCode, b)
+		}
+		var contacts []map[string]interface{}
+		json.NewDecoder(resp.Body).Decode(&contacts)
+		return contacts
+	}
+
+	// Tenant A should have 2 contacts
+	contactsA := listContacts(slugA, tokenA)
+	if len(contactsA) != 2 {
+		t.Errorf("tenant-a contacts: got %d, want 2", len(contactsA))
+	}
+
+	// Tenant B should have 1 contact
+	contactsB := listContacts(slugB, tokenB)
+	if len(contactsB) != 1 {
+		t.Errorf("tenant-b contacts: got %d, want 1", len(contactsB))
+	}
+
+	// Verify tenant A's contacts are alice and bob
+	emails := map[string]bool{}
+	for _, c := range contactsA {
+		emails[c["email"].(string)] = true
+	}
+	if !emails["alice@a.com"] || !emails["bob@a.com"] {
+		t.Errorf("tenant-a contacts missing expected emails: %v", emails)
+	}
+
+	// Verify tenant B's contact is carol
+	if contactsB[0]["email"] != "carol@b.com" {
+		t.Errorf("tenant-b contact email = %v, want carol@b.com", contactsB[0]["email"])
+	}
+}
+
+func TestMarketingCrossTenantIsolation(t *testing.T) {
+	srv, _, slugB, tokenA, _ := marketingTenantEnv(t)
+
+	// Tenant A's admin token should NOT access tenant B's contacts
+	req, _ := http.NewRequest("GET", srv.URL+"/t/"+slugB+"/admin/contacts", nil)
+	req.Header.Set("Authorization", "Bearer "+tokenA)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusForbidden {
+		b, _ := io.ReadAll(resp.Body)
+		t.Fatalf("cross-tenant access: got status %d, want 403, body: %s", resp.StatusCode, b)
+	}
+
+	// Also test POST (create) cross-tenant
+	body := `{"email":"evil@attacker.com","name":"Evil"}`
+	req, _ = http.NewRequest("POST", srv.URL+"/t/"+slugB+"/admin/contacts", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+tokenA)
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusForbidden {
+		b, _ := io.ReadAll(resp.Body)
+		t.Fatalf("cross-tenant create: got status %d, want 403, body: %s", resp.StatusCode, b)
 	}
 }
