@@ -79,8 +79,8 @@ func newRoutingDB(t *testing.T) *sql.DB {
 	CREATE TABLE IF NOT EXISTS campaigns (
 		id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL DEFAULT '', subject TEXT NOT NULL,
 		html_body TEXT NOT NULL, from_name TEXT NOT NULL DEFAULT '',
-		from_email TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'draft',
-		sent_at DATETIME, created_at DATETIME NOT NULL
+		from_email TEXT NOT NULL DEFAULT '', attachment_url TEXT NOT NULL DEFAULT '',
+		status TEXT NOT NULL DEFAULT 'draft', sent_at DATETIME, created_at DATETIME NOT NULL
 	);
 	CREATE TABLE IF NOT EXISTS campaign_segments (
 		campaign_id TEXT NOT NULL REFERENCES campaigns(id) ON DELETE CASCADE,

@@ -3973,17 +3973,18 @@ func TestContactSegmentRelationship(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 type capturedMail struct {
-	To      string
-	Subject string
-	Body    string
+	To          string
+	Subject     string
+	Body        string
+	Attachments []marketing.Attachment
 }
 
 type CapturingMailer struct {
 	mails []capturedMail
 }
 
-func (m *CapturingMailer) Send(to, subject, htmlBody string, _ map[string]string) error {
-	m.mails = append(m.mails, capturedMail{To: to, Subject: subject, Body: htmlBody})
+func (m *CapturingMailer) Send(to, subject, htmlBody string, _ map[string]string, attachments []marketing.Attachment) error {
+	m.mails = append(m.mails, capturedMail{To: to, Subject: subject, Body: htmlBody, Attachments: attachments})
 	return nil
 }
 
@@ -4955,5 +4956,140 @@ func TestImportTenantWithFixedClientID(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("expected client with fixed ID 00000000-0000-0000-0000-000000000001, got %v", result.Clients)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Campaign PDF Attachment Tests
+// ---------------------------------------------------------------------------
+
+// createCampaignWithAttachment is like createCampaign but includes an attachment_url.
+func createCampaignWithAttachment(t *testing.T, env *testEnv, token string, segmentIDs []string, attachmentURL string) map[string]any {
+	t.Helper()
+	segsJSON, _ := json.Marshal(segmentIDs)
+	body := fmt.Sprintf(`{"subject":"Test Subject","html_body":"<p>Hello {{.Name}}</p>","from_name":"Sender","from_email":"sender@example.com","segment_ids":%s,"attachment_url":%q}`, segsJSON, attachmentURL)
+	resp := doRequest(t, env.srv, "POST", "/admin/campaigns", token, body)
+	assertStatus(t, resp, http.StatusCreated)
+	var c map[string]any
+	decodeJSON(t, resp, &c)
+	return c
+}
+
+func TestCreateCampaignWithAttachment(t *testing.T) {
+	env := newTestEnv(t)
+	token := loginAsAdmin(t, env)
+
+	c := createCampaignWithAttachment(t, env, token, []string{}, "https://example.com/guide.pdf")
+	if c["attachment_url"] != "https://example.com/guide.pdf" {
+		t.Errorf("expected attachment_url in create response, got %v", c["attachment_url"])
+	}
+
+	// GET the campaign and verify attachment_url is returned.
+	campID, _ := c["id"].(string)
+	resp := doRequest(t, env.srv, "GET", "/admin/campaigns/"+campID, token, "")
+	assertStatus(t, resp, http.StatusOK)
+	var detail map[string]any
+	decodeJSON(t, resp, &detail)
+	camp, _ := detail["campaign"].(map[string]any)
+	if camp == nil {
+		t.Fatal("expected campaign key in GET response")
+	}
+	if camp["attachment_url"] != "https://example.com/guide.pdf" {
+		t.Errorf("expected attachment_url in GET response, got %v", camp["attachment_url"])
+	}
+}
+
+func TestSendCampaignWithAttachment(t *testing.T) {
+	// Start an httptest.Server that serves a small PDF file.
+	pdfData := []byte("%PDF-1.4 test content for attachment")
+	pdfServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/pdf")
+		w.Write(pdfData)
+	}))
+	defer pdfServer.Close()
+
+	capMailer := &CapturingMailer{}
+	env := newTestEnvWithMailer(t, capMailer)
+	token := loginAsAdmin(t, env)
+
+	segID := newTestEnvSegWithContact(t, env, token, "AttachSeg", "attach@test.com")
+	camp := createCampaignWithAttachment(t, env, token, []string{segID}, pdfServer.URL+"/guide.pdf")
+	campID, _ := camp["id"].(string)
+
+	// Send campaign (synchronous in test mode).
+	sendResp := doRequest(t, env.srv, "POST", "/admin/campaigns/"+campID+"/send", token, "")
+	assertStatus(t, sendResp, http.StatusAccepted)
+	sendResp.Body.Close()
+
+	if len(capMailer.mails) == 0 {
+		t.Fatal("no emails captured")
+	}
+	mail := capMailer.mails[0]
+	if len(mail.Attachments) == 0 {
+		t.Fatal("expected attachments in captured mail, got none")
+	}
+	att := mail.Attachments[0]
+	if att.ContentType != "application/pdf" {
+		t.Errorf("expected content type application/pdf, got %q", att.ContentType)
+	}
+	if att.Filename != "guide.pdf" {
+		t.Errorf("expected filename guide.pdf, got %q", att.Filename)
+	}
+	if string(att.Data) != string(pdfData) {
+		t.Errorf("attachment data mismatch: got %d bytes, want %d bytes", len(att.Data), len(pdfData))
+	}
+}
+
+func TestCampaignAttachmentTooLarge(t *testing.T) {
+	// Serve a response larger than 10MB.
+	bigData := make([]byte, 11*1024*1024)
+	bigServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/pdf")
+		w.Write(bigData)
+	}))
+	defer bigServer.Close()
+
+	capMailer := &CapturingMailer{}
+	env := newTestEnvWithMailer(t, capMailer)
+	token := loginAsAdmin(t, env)
+
+	segID := newTestEnvSegWithContact(t, env, token, "BigAttachSeg", "bigattach@test.com")
+	camp := createCampaignWithAttachment(t, env, token, []string{segID}, bigServer.URL+"/big.pdf")
+	campID, _ := camp["id"].(string)
+
+	sendResp := doRequest(t, env.srv, "POST", "/admin/campaigns/"+campID+"/send", token, "")
+	assertStatus(t, sendResp, http.StatusAccepted)
+	sendResp.Body.Close()
+
+	// Campaign should be marked as failed due to oversized attachment.
+	resp := doRequest(t, env.srv, "GET", "/admin/campaigns/"+campID, token, "")
+	assertStatus(t, resp, http.StatusOK)
+	var detail map[string]any
+	decodeJSON(t, resp, &detail)
+	campDetail, _ := detail["campaign"].(map[string]any)
+	if campDetail["status"] != "failed" {
+		t.Errorf("expected campaign status 'failed' for oversized attachment, got %q", campDetail["status"])
+	}
+}
+
+func TestCampaignWithoutAttachment(t *testing.T) {
+	capMailer := &CapturingMailer{}
+	env := newTestEnvWithMailer(t, capMailer)
+	token := loginAsAdmin(t, env)
+
+	segID := newTestEnvSegWithContact(t, env, token, "NoAttachSeg", "noattach@test.com")
+	camp := createCampaign(t, env, token, []string{segID})
+	campID, _ := camp["id"].(string)
+
+	sendResp := doRequest(t, env.srv, "POST", "/admin/campaigns/"+campID+"/send", token, "")
+	assertStatus(t, sendResp, http.StatusAccepted)
+	sendResp.Body.Close()
+
+	if len(capMailer.mails) == 0 {
+		t.Fatal("no emails captured")
+	}
+	mail := capMailer.mails[0]
+	if len(mail.Attachments) != 0 {
+		t.Errorf("expected no attachments for campaign without attachment_url, got %d", len(mail.Attachments))
 	}
 }

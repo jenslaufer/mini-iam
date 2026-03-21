@@ -383,11 +383,12 @@ func (h *Handler) AdminCampaigns(w http.ResponseWriter, r *http.Request) {
 
 	case http.MethodPost:
 		var req struct {
-			Subject    string   `json:"subject"`
-			HTMLBody   string   `json:"html_body"`
-			FromName   string   `json:"from_name"`
-			FromEmail  string   `json:"from_email"`
-			SegmentIDs []string `json:"segment_ids"`
+			Subject       string   `json:"subject"`
+			HTMLBody      string   `json:"html_body"`
+			FromName      string   `json:"from_name"`
+			FromEmail     string   `json:"from_email"`
+			AttachmentURL string   `json:"attachment_url"`
+			SegmentIDs    []string `json:"segment_ids"`
 		}
 		if !iam.DecodeJSON(w, r, &req) {
 			return
@@ -400,7 +401,7 @@ func (h *Handler) AdminCampaigns(w http.ResponseWriter, r *http.Request) {
 			iam.WriteError(w, http.StatusBadRequest, "invalid_request", "html_body required")
 			return
 		}
-		campaign, err := store.CreateCampaign(req.Subject, req.HTMLBody, req.FromName, req.FromEmail, req.SegmentIDs)
+		campaign, err := store.CreateCampaign(req.Subject, req.HTMLBody, req.FromName, req.FromEmail, req.AttachmentURL, req.SegmentIDs)
 		if err != nil {
 			iam.WriteError(w, http.StatusInternalServerError, "server_error", "failed to create campaign")
 			return
@@ -487,16 +488,17 @@ func (h *Handler) AdminCampaignByID(w http.ResponseWriter, r *http.Request) {
 
 	case http.MethodPut:
 		var req struct {
-			Subject    string   `json:"subject"`
-			HTMLBody   string   `json:"html_body"`
-			FromName   string   `json:"from_name"`
-			FromEmail  string   `json:"from_email"`
-			SegmentIDs []string `json:"segment_ids"`
+			Subject       string   `json:"subject"`
+			HTMLBody      string   `json:"html_body"`
+			FromName      string   `json:"from_name"`
+			FromEmail     string   `json:"from_email"`
+			AttachmentURL string   `json:"attachment_url"`
+			SegmentIDs    []string `json:"segment_ids"`
 		}
 		if !iam.DecodeJSON(w, r, &req) {
 			return
 		}
-		campaign, err := store.UpdateCampaign(campaignID, req.Subject, req.HTMLBody, req.FromName, req.FromEmail, req.SegmentIDs)
+		campaign, err := store.UpdateCampaign(campaignID, req.Subject, req.HTMLBody, req.FromName, req.FromEmail, req.AttachmentURL, req.SegmentIDs)
 		if err != nil {
 			if strings.Contains(err.Error(), "draft") {
 				iam.WriteError(w, http.StatusBadRequest, "invalid_request", "can only update draft campaigns")

@@ -113,7 +113,8 @@ func newTestHandlerDB(t *testing.T) *sql.DB {
 	CREATE TABLE campaigns (
 		id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL DEFAULT '', subject TEXT NOT NULL, html_body TEXT NOT NULL,
 		from_name TEXT NOT NULL DEFAULT '', from_email TEXT NOT NULL DEFAULT '',
-		status TEXT NOT NULL DEFAULT 'draft', sent_at DATETIME, created_at DATETIME NOT NULL
+		attachment_url TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'draft',
+		sent_at DATETIME, created_at DATETIME NOT NULL
 	);
 	CREATE TABLE campaign_segments (
 		campaign_id TEXT NOT NULL REFERENCES campaigns(id) ON DELETE CASCADE,

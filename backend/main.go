@@ -377,6 +377,7 @@ func migrate(db *sql.DB) error {
 		html_body TEXT NOT NULL,
 		from_name TEXT NOT NULL DEFAULT '',
 		from_email TEXT NOT NULL DEFAULT '',
+		attachment_url TEXT NOT NULL DEFAULT '',
 		status TEXT NOT NULL DEFAULT 'draft',
 		sent_at DATETIME,
 		created_at DATETIME NOT NULL
@@ -423,6 +424,7 @@ func migrate(db *sql.DB) error {
 	db.Exec("ALTER TABLE tenants ADD COLUMN smtp_from TEXT NOT NULL DEFAULT ''")
 	db.Exec("ALTER TABLE tenants ADD COLUMN smtp_from_name TEXT NOT NULL DEFAULT ''")
 	db.Exec("ALTER TABLE tenants ADD COLUMN smtp_rate_ms INTEGER NOT NULL DEFAULT 0")
+	db.Exec("ALTER TABLE campaigns ADD COLUMN attachment_url TEXT NOT NULL DEFAULT ''")
 
 	return nil
 }
