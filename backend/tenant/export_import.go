@@ -68,8 +68,9 @@ type CampaignConfig struct {
 	Subject    string                  `json:"subject"`
 	HTMLBody   string                  `json:"html_body"`
 	FromName   string                  `json:"from_name"`
-	FromEmail  string                  `json:"from_email"`
-	Segments   []string                `json:"segments,omitempty"`
+	FromEmail     string                  `json:"from_email"`
+	AttachmentURL string                  `json:"attachment_url,omitempty"`
+	Segments      []string                `json:"segments,omitempty"`
 	Status     string                  `json:"status,omitempty"`
 	SentAt     *time.Time              `json:"sent_at,omitempty"`
 	CreatedAt  *time.Time              `json:"created_at,omitempty"`
@@ -308,7 +309,7 @@ func ImportTenantConfig(tenantStore *Store, iamStore *iam.Store, mktStore *marke
 				}
 			}
 		} else {
-			if _, err := scopedMkt.CreateCampaign(c.Subject, c.HTMLBody, c.FromName, c.FromEmail, segIDs); err != nil {
+			if _, err := scopedMkt.CreateCampaign(c.Subject, c.HTMLBody, c.FromName, c.FromEmail, c.AttachmentURL, segIDs); err != nil {
 				return nil, err
 			}
 		}
@@ -746,10 +747,11 @@ func (h *ExportImportHandler) handleExport(w http.ResponseWriter, r *http.Reques
 				continue
 			}
 			ec := map[string]interface{}{
-				"subject":    full.Subject,
-				"html_body":  full.HTMLBody,
-				"from_name":  full.FromName,
-				"from_email": full.FromEmail,
+				"subject":        full.Subject,
+				"html_body":      full.HTMLBody,
+				"from_name":      full.FromName,
+				"from_email":     full.FromEmail,
+				"attachment_url": full.AttachmentURL,
 			}
 			if migration {
 				ec["status"] = full.Status

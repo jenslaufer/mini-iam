@@ -34,16 +34,17 @@ type Segment struct {
 }
 
 type Campaign struct {
-	ID         string     `json:"id"`
-	TenantID   string     `json:"tenant_id"`
-	Subject    string     `json:"subject"`
-	HTMLBody   string     `json:"html_body"`
-	FromName   string     `json:"from_name"`
-	FromEmail  string     `json:"from_email"`
-	Status     string     `json:"status"`
-	SentAt     *time.Time `json:"sent_at,omitempty"`
-	CreatedAt  time.Time  `json:"created_at"`
-	SegmentIDs []string   `json:"segment_ids,omitempty"`
+	ID            string     `json:"id"`
+	TenantID      string     `json:"tenant_id"`
+	Subject       string     `json:"subject"`
+	HTMLBody      string     `json:"html_body"`
+	FromName      string     `json:"from_name"`
+	FromEmail     string     `json:"from_email"`
+	AttachmentURL string     `json:"attachment_url,omitempty"`
+	Status        string     `json:"status"`
+	SentAt        *time.Time `json:"sent_at,omitempty"`
+	CreatedAt     time.Time  `json:"created_at"`
+	SegmentIDs    []string   `json:"segment_ids,omitempty"`
 }
 
 type CampaignSummary struct {

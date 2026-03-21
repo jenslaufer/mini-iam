@@ -1,17 +1,32 @@
 package marketing
 
 import (
+	"crypto/rand"
+	"encoding/base64"
 	"fmt"
+	"io"
 	"log"
+	"net/http"
 	"net/smtp"
+	"net/url"
+	"path"
+	"regexp"
 	"strings"
 	"time"
 )
 
+// --- Attachment ---
+
+type Attachment struct {
+	Filename    string
+	ContentType string
+	Data        []byte
+}
+
 // --- Mailer interface ---
 
 type Mailer interface {
-	Send(to, subject, htmlBody string, headers map[string]string) error
+	Send(to, subject, htmlBody string, headers map[string]string, attachments []Attachment) error
 }
 
 // --- SMTP Mailer ---
@@ -25,35 +40,75 @@ type SMTPMailer struct {
 	FromName string
 }
 
-func (m *SMTPMailer) Send(to, subject, htmlBody string, headers map[string]string) error {
-	from := m.From
-	if m.FromName != "" {
-		from = fmt.Sprintf("%s <%s>", m.FromName, m.From)
+func (m *SMTPMailer) Send(to, subject, htmlBody string, headers map[string]string, attachments []Attachment) error {
+	msg := buildMIMEMessage(m.From, m.FromName, to, subject, htmlBody, headers, attachments)
+	auth := smtp.PlainAuth("", m.User, m.Password, m.Host)
+	addr := fmt.Sprintf("%s:%s", m.Host, m.Port)
+	return smtp.SendMail(addr, auth, m.From, []string{to}, msg)
+}
+
+// buildMIMEMessage constructs a complete email message. If attachments are
+// present it builds a multipart/mixed message; otherwise a simple text/html.
+func buildMIMEMessage(from, fromName, to, subject, htmlBody string, headers map[string]string, attachments []Attachment) []byte {
+	fromHeader := from
+	if fromName != "" {
+		fromHeader = fmt.Sprintf("%s <%s>", fromName, from)
 	}
 
 	var msg strings.Builder
-	msg.WriteString(fmt.Sprintf("From: %s\r\n", from))
+	msg.WriteString(fmt.Sprintf("From: %s\r\n", fromHeader))
 	msg.WriteString(fmt.Sprintf("To: %s\r\n", to))
 	msg.WriteString(fmt.Sprintf("Subject: %s\r\n", subject))
 	msg.WriteString("MIME-Version: 1.0\r\n")
-	msg.WriteString("Content-Type: text/html; charset=UTF-8\r\n")
 	for k, v := range headers {
 		msg.WriteString(fmt.Sprintf("%s: %s\r\n", k, v))
 	}
+
+	if len(attachments) == 0 {
+		msg.WriteString("Content-Type: text/html; charset=UTF-8\r\n")
+		msg.WriteString("\r\n")
+		msg.WriteString(htmlBody)
+		return []byte(msg.String())
+	}
+
+	b := make([]byte, 16)
+	rand.Read(b)
+	boundary := fmt.Sprintf("==BOUNDARY_%x==", b)
+	msg.WriteString(fmt.Sprintf("Content-Type: multipart/mixed; boundary=\"%s\"\r\n", boundary))
+	msg.WriteString("\r\n")
+
+	// HTML part
+	msg.WriteString(fmt.Sprintf("--%s\r\n", boundary))
+	msg.WriteString("Content-Type: text/html; charset=UTF-8\r\n")
 	msg.WriteString("\r\n")
 	msg.WriteString(htmlBody)
+	msg.WriteString("\r\n")
 
-	auth := smtp.PlainAuth("", m.User, m.Password, m.Host)
-	addr := fmt.Sprintf("%s:%s", m.Host, m.Port)
-	return smtp.SendMail(addr, auth, m.From, []string{to}, []byte(msg.String()))
+	// Attachment parts
+	for _, att := range attachments {
+		msg.WriteString(fmt.Sprintf("--%s\r\n", boundary))
+		msg.WriteString(fmt.Sprintf("Content-Type: %s; name=\"%s\"\r\n", att.ContentType, att.Filename))
+		msg.WriteString("Content-Transfer-Encoding: base64\r\n")
+		msg.WriteString(fmt.Sprintf("Content-Disposition: attachment; filename=\"%s\"\r\n", att.Filename))
+		msg.WriteString("\r\n")
+		msg.WriteString(base64.StdEncoding.EncodeToString(att.Data))
+		msg.WriteString("\r\n")
+	}
+
+	msg.WriteString(fmt.Sprintf("--%s--\r\n", boundary))
+	return []byte(msg.String())
 }
 
 // --- Log Mailer (development fallback) ---
 
 type LogMailer struct{}
 
-func (m *LogMailer) Send(to, subject, htmlBody string, headers map[string]string) error {
-	log.Printf("[MAIL] To: %s | Subject: %s | Headers: %v | Body length: %d", to, subject, headers, len(htmlBody))
+func (m *LogMailer) Send(to, subject, htmlBody string, headers map[string]string, attachments []Attachment) error {
+	attInfo := ""
+	for _, a := range attachments {
+		attInfo += fmt.Sprintf(" [%s %d bytes]", a.Filename, len(a.Data))
+	}
+	log.Printf("[MAIL] To: %s | Subject: %s | Headers: %v | Body length: %d%s", to, subject, headers, len(htmlBody), attInfo)
 	return nil
 }
 
@@ -64,6 +119,8 @@ type TenantProvider interface {
 }
 
 // --- Campaign Sender (background worker) ---
+
+const maxAttachmentSize = 10 * 1024 * 1024 // 10 MB
 
 type sendRequest struct {
 	campaignID string
@@ -78,6 +135,7 @@ type CampaignSender struct {
 	rateMS         int
 	queue          chan sendRequest
 	syncMode       bool
+	httpClient     *http.Client
 }
 
 func NewCampaignSender(store *Store, mailer Mailer, issuer string, rateMS int) *CampaignSender {
@@ -87,6 +145,9 @@ func NewCampaignSender(store *Store, mailer Mailer, issuer string, rateMS int) *
 		issuer: issuer,
 		rateMS: rateMS,
 		queue:  make(chan sendRequest, 100),
+		httpClient: &http.Client{
+			Timeout: 30 * time.Second,
+		},
 	}
 }
 
@@ -139,6 +200,49 @@ func (cs *CampaignSender) Enqueue(campaignID string, tenantID string) {
 	cs.queue <- sendRequest{campaignID: campaignID, tenantID: tenantID}
 }
 
+// safeFilename strips everything except alphanumerics, dots, hyphens, and underscores.
+var safeFilenameRe = regexp.MustCompile(`[^a-zA-Z0-9._-]`)
+
+// fetchAttachment downloads the PDF from the given URL and returns an Attachment.
+func (cs *CampaignSender) fetchAttachment(rawURL string) (*Attachment, error) {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return nil, fmt.Errorf("invalid attachment URL: %w", err)
+	}
+	if parsed.Scheme != "https" && parsed.Scheme != "http" {
+		return nil, fmt.Errorf("attachment URL must use http or https scheme")
+	}
+
+	resp, err := cs.httpClient.Get(rawURL)
+	if err != nil {
+		return nil, fmt.Errorf("download attachment: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("download attachment: status %d", resp.StatusCode)
+	}
+
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxAttachmentSize+1))
+	if err != nil {
+		return nil, fmt.Errorf("read attachment: %w", err)
+	}
+	if len(data) > maxAttachmentSize {
+		return nil, fmt.Errorf("attachment exceeds maximum size of %d bytes", maxAttachmentSize)
+	}
+
+	filename := safeFilenameRe.ReplaceAllString(path.Base(parsed.Path), "_")
+	if filename == "" || filename == "." || filename == "/" {
+		filename = "document.pdf"
+	}
+
+	return &Attachment{
+		Filename:    filename,
+		ContentType: "application/pdf",
+		Data:        data,
+	}, nil
+}
+
 func (cs *CampaignSender) processCampaign(campaignID string, tenantID string) {
 	store := cs.store.ForTenant(tenantID)
 
@@ -157,6 +261,18 @@ func (cs *CampaignSender) processCampaign(campaignID string, tenantID string) {
 	if err := store.SetCampaignStatus(campaignID, "sending"); err != nil {
 		log.Printf("Campaign %s: failed to set sending status: %v", campaignID, err)
 		return
+	}
+
+	// Fetch attachment once for all recipients
+	var attachments []Attachment
+	if campaign.AttachmentURL != "" {
+		att, err := cs.fetchAttachment(campaign.AttachmentURL)
+		if err != nil {
+			log.Printf("Campaign %s: failed to fetch attachment: %v", campaignID, err)
+			store.SetCampaignStatus(campaignID, "failed")
+			return
+		}
+		attachments = []Attachment{*att}
 	}
 
 	// Prepare recipients (deduplicate, skip unsubscribed)
@@ -202,7 +318,7 @@ func (cs *CampaignSender) processCampaign(campaignID string, tenantID string) {
 
 		subject := campaign.Subject
 
-		if err := mailer.Send(r.ContactEmail, subject, body, headers); err != nil {
+		if err := mailer.Send(r.ContactEmail, subject, body, headers, attachments); err != nil {
 			log.Printf("Campaign %s: failed to send to %s: %v", campaignID, r.ContactEmail, err)
 			store.UpdateRecipientStatus(r.ID, "failed", err.Error())
 			allSuccess = false

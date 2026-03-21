@@ -24,13 +24,11 @@ type Handler struct {
 	Issuer           string
 	PlatformTenantID string
 	Registration     RegistrationPolicy // nil = registration always allowed
-	Mailer           Mailer
+	Mailer           SendMailFunc
 }
 
-// Mailer sends emails. Matches marketing.Mailer interface.
-type Mailer interface {
-	Send(to, subject, htmlBody string, headers map[string]string) error
-}
+// SendMailFunc sends an email. Used for password reset without depending on marketing package.
+type SendMailFunc func(to, subject, htmlBody string) error
 
 func NewHandler(store *Store, registry *TokenRegistry, issuer string) *Handler {
 	return &Handler{Store: store, Registry: registry, Issuer: issuer}
@@ -1268,7 +1266,7 @@ func (h *Handler) ForgotPassword(w http.ResponseWriter, r *http.Request) {
 <p>This link expires in 1 hour.</p>
 </body></html>`, html.EscapeString(resetURL), html.EscapeString(resetURL))
 
-	h.Mailer.Send(req.Email, "Reset your password", body, nil)
+	h.Mailer(req.Email, "Reset your password", body)
 }
 
 // ResetPassword handles the password reset form and submission.

@@ -490,16 +490,17 @@ func (s *Store) GetContactSegments(contactID string) ([]Segment, error) {
 
 // --- Campaigns ---
 
-func (s *Store) CreateCampaign(subject, htmlBody, fromName, fromEmail string, segmentIDs []string) (*Campaign, error) {
+func (s *Store) CreateCampaign(subject, htmlBody, fromName, fromEmail, attachmentURL string, segmentIDs []string) (*Campaign, error) {
 	c := &Campaign{
-		ID:        uuid.NewString(),
-		TenantID:  s.tenantID,
-		Subject:   subject,
-		HTMLBody:  htmlBody,
-		FromName:  fromName,
-		FromEmail: fromEmail,
-		Status:    "draft",
-		CreatedAt: time.Now().UTC(),
+		ID:            uuid.NewString(),
+		TenantID:      s.tenantID,
+		Subject:       subject,
+		HTMLBody:      htmlBody,
+		FromName:      fromName,
+		FromEmail:     fromEmail,
+		AttachmentURL: attachmentURL,
+		Status:        "draft",
+		CreatedAt:     time.Now().UTC(),
 	}
 
 	tx, err := s.db.Begin()
@@ -509,9 +510,9 @@ func (s *Store) CreateCampaign(subject, htmlBody, fromName, fromEmail string, se
 	defer tx.Rollback()
 
 	_, err = tx.Exec(
-		`INSERT INTO campaigns (id, tenant_id, subject, html_body, from_name, from_email, status, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		c.ID, c.TenantID, c.Subject, c.HTMLBody, c.FromName, c.FromEmail, c.Status, c.CreatedAt,
+		`INSERT INTO campaigns (id, tenant_id, subject, html_body, from_name, from_email, attachment_url, status, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		c.ID, c.TenantID, c.Subject, c.HTMLBody, c.FromName, c.FromEmail, c.AttachmentURL, c.Status, c.CreatedAt,
 	)
 	if err != nil {
 		return nil, err
@@ -578,9 +579,9 @@ func (s *Store) GetCampaignByID(id string) (*Campaign, error) {
 	c := &Campaign{}
 	var sentAt sql.NullTime
 	err := s.db.QueryRow(
-		`SELECT id, tenant_id, subject, html_body, from_name, from_email, status, sent_at, created_at
+		`SELECT id, tenant_id, subject, html_body, from_name, from_email, attachment_url, status, sent_at, created_at
 		 FROM campaigns WHERE id = ? AND tenant_id = ?`, id, s.tenantID,
-	).Scan(&c.ID, &c.TenantID, &c.Subject, &c.HTMLBody, &c.FromName, &c.FromEmail, &c.Status, &sentAt, &c.CreatedAt)
+	).Scan(&c.ID, &c.TenantID, &c.Subject, &c.HTMLBody, &c.FromName, &c.FromEmail, &c.AttachmentURL, &c.Status, &sentAt, &c.CreatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -605,7 +606,7 @@ func (s *Store) GetCampaignByID(id string) (*Campaign, error) {
 	return c, rows.Err()
 }
 
-func (s *Store) UpdateCampaign(id, subject, htmlBody, fromName, fromEmail string, segmentIDs []string) (*Campaign, error) {
+func (s *Store) UpdateCampaign(id, subject, htmlBody, fromName, fromEmail, attachmentURL string, segmentIDs []string) (*Campaign, error) {
 	c, err := s.GetCampaignByID(id)
 	if err != nil {
 		return nil, err
@@ -621,8 +622,8 @@ func (s *Store) UpdateCampaign(id, subject, htmlBody, fromName, fromEmail string
 	defer tx.Rollback()
 
 	_, err = tx.Exec(
-		`UPDATE campaigns SET subject = ?, html_body = ?, from_name = ?, from_email = ? WHERE id = ? AND tenant_id = ?`,
-		subject, htmlBody, fromName, fromEmail, id, s.tenantID,
+		`UPDATE campaigns SET subject = ?, html_body = ?, from_name = ?, from_email = ?, attachment_url = ? WHERE id = ? AND tenant_id = ?`,
+		subject, htmlBody, fromName, fromEmail, attachmentURL, id, s.tenantID,
 	)
 	if err != nil {
 		return nil, err
@@ -651,6 +652,7 @@ func (s *Store) UpdateCampaign(id, subject, htmlBody, fromName, fromEmail string
 	c.HTMLBody = htmlBody
 	c.FromName = fromName
 	c.FromEmail = fromEmail
+	c.AttachmentURL = attachmentURL
 	c.SegmentIDs = segmentIDs
 	return c, nil
 }

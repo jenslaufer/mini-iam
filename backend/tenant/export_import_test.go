@@ -268,7 +268,7 @@ func seedFullTenant(t *testing.T, env *exportEnv, slug string) (*tenant.Tenant, 
 
 	// Draft campaign targeting the segment
 	_, err = mktScoped.CreateCampaign(
-		"Welcome", "<h1>Hi</h1>", "App", "hi@app.example.com",
+		"Welcome", "<h1>Hi</h1>", "App", "hi@app.example.com", "",
 		[]string{seg.ID},
 	)
 	if err != nil {
@@ -1508,7 +1508,7 @@ func TestDeleteTenant_CascadesAllData(t *testing.T) {
 	if err := mktScoped.AddContactToSegment(contact.ID, seg.ID); err != nil {
 		t.Fatalf("AddContactToSegment: %v", err)
 	}
-	_, err = mktScoped.CreateCampaign("Sub", "<p>body</p>", "From", "from@delete.com", []string{seg.ID})
+	_, err = mktScoped.CreateCampaign("Sub", "<p>body</p>", "From", "from@delete.com", "", []string{seg.ID})
 	if err != nil {
 		t.Fatalf("CreateCampaign: %v", err)
 	}
@@ -1975,7 +1975,7 @@ func seedMigrationTenant(t *testing.T, env *exportEnv, slug string) (*tenant.Ten
 
 	// Sent campaign with recipients
 	campaign, err := mktScoped.CreateCampaign(
-		"Welcome", "<h1>Hi</h1>", "App", "hi@mig.com",
+		"Welcome", "<h1>Hi</h1>", "App", "hi@mig.com", "",
 		[]string{seg.ID},
 	)
 	if err != nil {
@@ -1995,7 +1995,7 @@ func seedMigrationTenant(t *testing.T, env *exportEnv, slug string) (*tenant.Ten
 
 	// Also add a draft campaign
 	_, err = mktScoped.CreateCampaign(
-		"Draft Campaign", "<p>Draft</p>", "App", "hi@mig.com",
+		"Draft Campaign", "<p>Draft</p>", "App", "hi@mig.com", "",
 		[]string{seg.ID},
 	)
 	if err != nil {

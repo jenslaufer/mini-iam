@@ -51,6 +51,7 @@ func newTestDB(t *testing.T) *sql.DB {
 		html_body TEXT NOT NULL,
 		from_name TEXT NOT NULL DEFAULT '',
 		from_email TEXT NOT NULL DEFAULT '',
+		attachment_url TEXT NOT NULL DEFAULT '',
 		status TEXT NOT NULL DEFAULT 'draft',
 		sent_at DATETIME,
 		created_at DATETIME NOT NULL
@@ -456,7 +457,7 @@ func TestCreateCampaign(t *testing.T) {
 	s := newTestStore(t)
 
 	seg, _ := s.CreateSegment("Target", "")
-	c, err := s.CreateCampaign("Welcome", "<h1>Hi</h1>", "Test", "test@example.com", []string{seg.ID})
+	c, err := s.CreateCampaign("Welcome", "<h1>Hi</h1>", "Test", "test@example.com", "", []string{seg.ID})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -474,8 +475,8 @@ func TestCreateCampaign(t *testing.T) {
 func TestListCampaigns(t *testing.T) {
 	s := newTestStore(t)
 
-	s.CreateCampaign("Camp1", "<p>1</p>", "N", "n@example.com", nil)
-	s.CreateCampaign("Camp2", "<p>2</p>", "N", "n@example.com", nil)
+	s.CreateCampaign("Camp1", "<p>1</p>", "N", "n@example.com", "", nil)
+	s.CreateCampaign("Camp2", "<p>2</p>", "N", "n@example.com", "", nil)
 
 	campaigns, err := s.ListCampaigns()
 	if err != nil {
@@ -490,7 +491,7 @@ func TestGetCampaignByID(t *testing.T) {
 	s := newTestStore(t)
 
 	seg, _ := s.CreateSegment("S", "")
-	created, _ := s.CreateCampaign("Get", "<p>x</p>", "N", "n@example.com", []string{seg.ID})
+	created, _ := s.CreateCampaign("Get", "<p>x</p>", "N", "n@example.com", "", []string{seg.ID})
 
 	got, err := s.GetCampaignByID(created.ID)
 	if err != nil {
@@ -507,8 +508,8 @@ func TestGetCampaignByID(t *testing.T) {
 func TestUpdateCampaign(t *testing.T) {
 	s := newTestStore(t)
 
-	c, _ := s.CreateCampaign("Old", "<p>old</p>", "N", "n@example.com", nil)
-	updated, err := s.UpdateCampaign(c.ID, "New", "<p>new</p>", "New Name", "new@example.com", nil)
+	c, _ := s.CreateCampaign("Old", "<p>old</p>", "N", "n@example.com", "", nil)
+	updated, err := s.UpdateCampaign(c.ID, "New", "<p>new</p>", "New Name", "new@example.com", "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -523,10 +524,10 @@ func TestUpdateCampaign(t *testing.T) {
 func TestUpdateCampaignNotDraft(t *testing.T) {
 	s := newTestStore(t)
 
-	c, _ := s.CreateCampaign("Sent", "<p>x</p>", "N", "n@example.com", nil)
+	c, _ := s.CreateCampaign("Sent", "<p>x</p>", "N", "n@example.com", "", nil)
 	s.SetCampaignStatus(c.ID, "sent")
 
-	_, err := s.UpdateCampaign(c.ID, "Updated", "<p>y</p>", "N", "n@example.com", nil)
+	_, err := s.UpdateCampaign(c.ID, "Updated", "<p>y</p>", "N", "n@example.com", "", nil)
 	if err == nil {
 		t.Error("expected error when updating non-draft campaign")
 	}
@@ -535,7 +536,7 @@ func TestUpdateCampaignNotDraft(t *testing.T) {
 func TestDeleteCampaign(t *testing.T) {
 	s := newTestStore(t)
 
-	c, _ := s.CreateCampaign("Del", "<p>x</p>", "N", "n@example.com", nil)
+	c, _ := s.CreateCampaign("Del", "<p>x</p>", "N", "n@example.com", "", nil)
 	if err := s.DeleteCampaign(c.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -548,7 +549,7 @@ func TestDeleteCampaign(t *testing.T) {
 func TestDeleteCampaignNotDraft(t *testing.T) {
 	s := newTestStore(t)
 
-	c, _ := s.CreateCampaign("Sent", "<p>x</p>", "N", "n@example.com", nil)
+	c, _ := s.CreateCampaign("Sent", "<p>x</p>", "N", "n@example.com", "", nil)
 	s.SetCampaignStatus(c.ID, "sent")
 
 	err := s.DeleteCampaign(c.ID)
@@ -560,7 +561,7 @@ func TestDeleteCampaignNotDraft(t *testing.T) {
 func TestSetCampaignStatus(t *testing.T) {
 	s := newTestStore(t)
 
-	c, _ := s.CreateCampaign("Status", "<p>x</p>", "N", "n@example.com", nil)
+	c, _ := s.CreateCampaign("Status", "<p>x</p>", "N", "n@example.com", "", nil)
 
 	if err := s.SetCampaignStatus(c.ID, "sending"); err != nil {
 		t.Fatal(err)
@@ -591,7 +592,7 @@ func TestPrepareCampaignRecipients(t *testing.T) {
 	s.AddContactToSegment(c1.ID, seg.ID)
 	s.AddContactToSegment(c2.ID, seg.ID)
 
-	camp, _ := s.CreateCampaign("Prep", "<p>x</p>", "N", "n@example.com", []string{seg.ID})
+	camp, _ := s.CreateCampaign("Prep", "<p>x</p>", "N", "n@example.com", "", []string{seg.ID})
 
 	count, err := s.PrepareCampaignRecipients(camp.ID)
 	if err != nil {
@@ -622,7 +623,7 @@ func TestPrepareCampaignRecipientsSkipsUnsubscribed(t *testing.T) {
 	s.AddContactToSegment(c2.ID, seg.ID)
 	s.UnsubscribeContact(c2.UnsubscribeToken)
 
-	camp, _ := s.CreateCampaign("Skip", "<p>x</p>", "N", "n@example.com", []string{seg.ID})
+	camp, _ := s.CreateCampaign("Skip", "<p>x</p>", "N", "n@example.com", "", []string{seg.ID})
 	count, _ := s.PrepareCampaignRecipients(camp.ID)
 	if count != 1 {
 		t.Errorf("prepared = %d, want 1 (unsubscribed skipped)", count)
@@ -635,7 +636,7 @@ func TestUpdateRecipientStatus(t *testing.T) {
 	seg, _ := s.CreateSegment("Upd", "")
 	c, _ := s.CreateContact("upd@example.com", "Upd", "api")
 	s.AddContactToSegment(c.ID, seg.ID)
-	camp, _ := s.CreateCampaign("Upd", "<p>x</p>", "N", "n@example.com", []string{seg.ID})
+	camp, _ := s.CreateCampaign("Upd", "<p>x</p>", "N", "n@example.com", "", []string{seg.ID})
 	s.PrepareCampaignRecipients(camp.ID)
 
 	recipients, _ := s.GetCampaignRecipients(camp.ID)
@@ -659,7 +660,7 @@ func TestRecordOpen(t *testing.T) {
 	seg, _ := s.CreateSegment("Open", "")
 	c, _ := s.CreateContact("open@example.com", "Open", "api")
 	s.AddContactToSegment(c.ID, seg.ID)
-	camp, _ := s.CreateCampaign("Open", "<p>x</p>", "N", "n@example.com", []string{seg.ID})
+	camp, _ := s.CreateCampaign("Open", "<p>x</p>", "N", "n@example.com", "", []string{seg.ID})
 	s.PrepareCampaignRecipients(camp.ID)
 
 	recipients, _ := s.GetCampaignRecipients(camp.ID)
@@ -680,7 +681,7 @@ func TestGetCampaignStats(t *testing.T) {
 	s.AddContactToSegment(c1.ID, seg.ID)
 	s.AddContactToSegment(c2.ID, seg.ID)
 
-	camp, _ := s.CreateCampaign("Stats", "<p>x</p>", "N", "n@example.com", []string{seg.ID})
+	camp, _ := s.CreateCampaign("Stats", "<p>x</p>", "N", "n@example.com", "", []string{seg.ID})
 	s.PrepareCampaignRecipients(camp.ID)
 
 	recipients, _ := s.GetCampaignRecipients(camp.ID)
@@ -710,7 +711,7 @@ func TestCampaignSenderSync(t *testing.T) {
 	seg, _ := s.CreateSegment("Send", "")
 	c, _ := s.CreateContact("send@example.com", "Send", "api")
 	s.AddContactToSegment(c.ID, seg.ID)
-	camp, _ := s.CreateCampaign("Send", "<p>Hi {{.Name}}</p>", "N", "n@example.com", []string{seg.ID})
+	camp, _ := s.CreateCampaign("Send", "<p>Hi {{.Name}}</p>", "N", "n@example.com", "", []string{seg.ID})
 
 	mailer := &LogMailer{}
 	sender := NewCampaignSender(s, mailer, "http://localhost:8080", 0)
@@ -734,7 +735,7 @@ func TestCampaignSenderSync(t *testing.T) {
 func TestCampaignSenderSkipsNonDraft(t *testing.T) {
 	s := newTestStore(t)
 
-	camp, _ := s.CreateCampaign("Already Sent", "<p>x</p>", "N", "n@example.com", nil)
+	camp, _ := s.CreateCampaign("Already Sent", "<p>x</p>", "N", "n@example.com", "", nil)
 	s.SetCampaignStatus(camp.ID, "sent")
 
 	sender := NewCampaignSender(s, &LogMailer{}, "http://localhost:8080", 0)
@@ -749,7 +750,7 @@ func TestCampaignSenderSkipsNonDraft(t *testing.T) {
 
 type failMailer struct{}
 
-func (m *failMailer) Send(to, subject, htmlBody string, headers map[string]string) error {
+func (m *failMailer) Send(to, subject, htmlBody string, headers map[string]string, attachments []Attachment) error {
 	return fmt.Errorf("smtp error")
 }
 
@@ -759,7 +760,7 @@ func TestCampaignSenderMailerFailure(t *testing.T) {
 	seg, _ := s.CreateSegment("Fail", "")
 	c, _ := s.CreateContact("fail@example.com", "Fail", "api")
 	s.AddContactToSegment(c.ID, seg.ID)
-	camp, _ := s.CreateCampaign("Fail", "<p>x</p>", "N", "n@example.com", []string{seg.ID})
+	camp, _ := s.CreateCampaign("Fail", "<p>x</p>", "N", "n@example.com", "", []string{seg.ID})
 
 	sender := NewCampaignSender(s, &failMailer{}, "http://localhost:8080", 0)
 	sender.StartSync()

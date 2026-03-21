@@ -95,7 +95,9 @@ func NewHandler(store *Store, tokens *iam.TokenService, issuer string) *Handler 
 
 // SetMailer sets the mailer on the iam handler for password reset emails.
 func (h *Handler) SetMailer(m marketing.Mailer) {
-	h.iam.Mailer = m
+	h.iam.Mailer = func(to, subject, htmlBody string) error {
+		return m.Send(to, subject, htmlBody, nil, nil)
+	}
 }
 
 // syncSender propagates h.sender to the marketing handler before any call that
