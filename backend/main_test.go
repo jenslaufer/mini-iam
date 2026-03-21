@@ -4957,3 +4957,98 @@ func TestImportTenantWithFixedClientID(t *testing.T) {
 		t.Errorf("expected client with fixed ID 00000000-0000-0000-0000-000000000001, got %v", result.Clients)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Service Token Admin Access
+// ---------------------------------------------------------------------------
+
+// getServiceToken registers a client and obtains a client_credentials token.
+func getServiceToken(t *testing.T, srv *httptest.Server) string {
+	t.Helper()
+	client := registerClient(t, srv, "svc-admin", []string{"https://example.com/cb"})
+	resp := doForm(t, srv, "/token", url.Values{
+		"grant_type":    {"client_credentials"},
+		"client_id":     {client.ClientID},
+		"client_secret": {client.ClientSecret},
+	})
+	assertStatus(t, resp, http.StatusOK)
+	var tr TokenResponse
+	decodeJSON(t, resp, &tr)
+	if tr.AccessToken == "" {
+		t.Fatal("getServiceToken: empty access_token")
+	}
+	return tr.AccessToken
+}
+
+func TestServiceTokenCanCreateContact(t *testing.T) {
+	srv := newTestServer(t)
+	token := getServiceToken(t, srv)
+
+	resp := doJSONWithAuth(t, srv, "/admin/contacts", map[string]any{
+		"email": "svc-contact@example.com",
+		"name":  "Service Contact",
+	}, token)
+	assertStatus(t, resp, http.StatusCreated)
+}
+
+func TestServiceTokenCanListContacts(t *testing.T) {
+	srv := newTestServer(t)
+	token := getServiceToken(t, srv)
+
+	resp := doRequest(t, srv, "GET", "/admin/contacts", token, "")
+	assertStatus(t, resp, http.StatusOK)
+}
+
+// Service tokens must NOT access IAM admin endpoints (least-privilege).
+func TestServiceTokenCannotAccessUserAdmin(t *testing.T) {
+	srv := newTestServer(t)
+	token := getServiceToken(t, srv)
+
+	endpoints := []struct {
+		method string
+		path   string
+	}{
+		{"GET", "/admin/users"},
+		{"GET", "/admin/clients"},
+	}
+
+	for _, ep := range endpoints {
+		t.Run(ep.method+" "+ep.path, func(t *testing.T) {
+			resp := doRequest(t, srv, ep.method, ep.path, token, "")
+			if resp.StatusCode != http.StatusForbidden {
+				body := readBody(resp)
+				t.Errorf("expected 403, got %d (body=%q)", resp.StatusCode, body)
+			} else {
+				resp.Body.Close()
+			}
+		})
+	}
+}
+
+func TestUserTokenStillWorks(t *testing.T) {
+	srv := newTestServer(t)
+	adminToken := getAdminToken(t, srv)
+
+	// Admin user can access both IAM and marketing endpoints
+	endpoints := []struct {
+		method string
+		path   string
+		want   int
+	}{
+		{"GET", "/admin/users", http.StatusOK},
+		{"GET", "/admin/clients", http.StatusOK},
+		{"GET", "/admin/contacts", http.StatusOK},
+	}
+
+	for _, ep := range endpoints {
+		t.Run(ep.method+" "+ep.path, func(t *testing.T) {
+			resp := doRequest(t, srv, ep.method, ep.path, adminToken, "")
+			if resp.StatusCode != ep.want {
+				body := readBody(resp)
+				t.Errorf("expected %d, got %d (body=%q)", ep.want, resp.StatusCode, body)
+			} else {
+				resp.Body.Close()
+			}
+		})
+	}
+}

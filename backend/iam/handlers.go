@@ -732,6 +732,20 @@ func CheckAdmin(registry *TokenRegistry, store *Store, platformTenantID string, 
 		WriteError(w, http.StatusUnauthorized, "invalid_token", "invalid or expired token")
 		return nil, false
 	}
+
+	// Service tokens (client_credentials) are authorized without role check
+	// or user lookup. Callers must handle a nil *User return.
+	if typ, _ := claims["type"].(string); typ == "client_credentials" {
+		// Validate tenant: token must belong to request tenant OR be a platform admin
+		requestTenantID := tenantctx.FromContext(r.Context())
+		isPlatformAdmin := platformTenantID != "" && tokenTenantID == platformTenantID
+		if tokenTenantID != requestTenantID && !isPlatformAdmin {
+			WriteError(w, http.StatusForbidden, "invalid_token", "token tenant mismatch")
+			return nil, false
+		}
+		return nil, true
+	}
+
 	role, _ := claims["role"].(string)
 	if role != "admin" {
 		WriteError(w, http.StatusForbidden, "insufficient_scope", "admin role required")
@@ -825,7 +839,16 @@ func extractClaim(tokenStr, claimName string) interface{} {
 }
 
 func (h *Handler) requireAdmin(w http.ResponseWriter, r *http.Request) (*User, bool) {
-	return CheckAdmin(h.Registry, h.Store, h.PlatformTenantID, w, r)
+	user, ok := CheckAdmin(h.Registry, h.Store, h.PlatformTenantID, w, r)
+	if !ok {
+		return nil, false
+	}
+	// Service tokens (nil user) are not allowed on IAM admin endpoints.
+	if user == nil {
+		WriteError(w, http.StatusForbidden, "insufficient_scope", "service tokens cannot access user management")
+		return nil, false
+	}
+	return user, true
 }
 
 // requireAuth validates the Bearer token and returns the authenticated user.
