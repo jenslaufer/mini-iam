@@ -14,13 +14,50 @@ func TestSecurityHeaders(t *testing.T) {
 	handler.ServeHTTP(rr, httptest.NewRequest("GET", "/", nil))
 
 	expected := map[string]string{
-		"X-Content-Type-Options":    "nosniff",
-		"X-Frame-Options":           "DENY",
-		"Strict-Transport-Security": "max-age=63072000; includeSubDomains",
-		"Content-Security-Policy":   "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'",
+		"X-Content-Type-Options":            "nosniff",
+		"X-Frame-Options":                   "DENY",
+		"Strict-Transport-Security":         "max-age=63072000; includeSubDomains",
+		"Content-Security-Policy":           "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'",
+		"Referrer-Policy":                   "strict-origin-when-cross-origin",
+		"Permissions-Policy":                "camera=(), microphone=(), geolocation=(), payment=()",
+		"Cross-Origin-Opener-Policy":        "same-origin",
+		"X-Permitted-Cross-Domain-Policies": "none",
 	}
 	for header, want := range expected {
 		if got := rr.Header().Get(header); got != want {
+			t.Errorf("%s = %q, want %q", header, got, want)
+		}
+	}
+}
+
+func TestSecurityHeadersOnAPIResponse(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(200)
+		w.Write([]byte(`{"status":"ok"}`))
+	})
+	srv := httptest.NewServer(SecurityHeadersMiddleware(mux))
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/health")
+	if err != nil {
+		t.Fatalf("GET /health: %v", err)
+	}
+	defer resp.Body.Close()
+
+	expected := map[string]string{
+		"X-Content-Type-Options":            "nosniff",
+		"X-Frame-Options":                   "DENY",
+		"Strict-Transport-Security":         "max-age=63072000; includeSubDomains",
+		"Content-Security-Policy":           "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'",
+		"Referrer-Policy":                   "strict-origin-when-cross-origin",
+		"Permissions-Policy":                "camera=(), microphone=(), geolocation=(), payment=()",
+		"Cross-Origin-Opener-Policy":        "same-origin",
+		"X-Permitted-Cross-Domain-Policies": "none",
+	}
+	for header, want := range expected {
+		if got := resp.Header.Get(header); got != want {
 			t.Errorf("%s = %q, want %q", header, got, want)
 		}
 	}
