@@ -18,6 +18,9 @@ type RegistrationPolicy interface {
 	IsRegistrationEnabled(tenantID string) bool
 }
 
+// AuditFunc records an audit log entry. Parameters: tenantID, actorID, actorType, action, targetType, targetID, details.
+type AuditFunc func(tenantID, actorID, actorType, action, targetType, targetID string, details interface{})
+
 type Handler struct {
 	Store            *Store
 	Registry         *TokenRegistry
@@ -25,6 +28,7 @@ type Handler struct {
 	PlatformTenantID string
 	Registration     RegistrationPolicy // nil = registration always allowed
 	Mailer           SendMailFunc
+	AuditFn          AuditFunc
 }
 
 // SendMailFunc sends an email. Used for password reset without depending on marketing package.
@@ -37,6 +41,13 @@ func NewHandler(store *Store, registry *TokenRegistry, issuer string) *Handler {
 // tenantStore returns a store scoped to the request's tenant.
 func (h *Handler) tenantStore(r *http.Request) *Store {
 	return h.Store.ForTenant(tenantctx.FromContext(r.Context()))
+}
+
+// recordAudit logs an audit entry if AuditFn is configured.
+func (h *Handler) recordAudit(r *http.Request, actorID, actorType, action, targetType, targetID string, details interface{}) {
+	if h.AuditFn != nil {
+		h.AuditFn(tenantctx.FromContext(r.Context()), actorID, actorType, action, targetType, targetID, details)
+	}
 }
 
 // tenantTokens returns a TokenService for the request's tenant.
@@ -671,7 +682,8 @@ func (h *Handler) CreateClient(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, http.StatusMethodNotAllowed, "invalid_request", "method not allowed")
 		return
 	}
-	if _, ok := h.requireAdmin(w, r); !ok {
+	admin, ok := h.requireAdmin(w, r)
+	if !ok {
 		return
 	}
 
@@ -698,6 +710,8 @@ func (h *Handler) CreateClient(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, http.StatusInternalServerError, "server_error", "failed to create client")
 		return
 	}
+
+	h.recordAudit(r, admin.ID, "user", "client.create", "client", client.ID, map[string]string{"name": req.Name})
 
 	WriteJSON(w, http.StatusCreated, ClientCreateResponse{
 		ClientID:     client.ID,
@@ -950,7 +964,8 @@ func (h *Handler) AdminListUsers(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) AdminUserByID(w http.ResponseWriter, r *http.Request) {
-	if _, ok := h.requireAdmin(w, r); !ok {
+	admin, ok := h.requireAdmin(w, r)
+	if !ok {
 		return
 	}
 
@@ -987,11 +1002,21 @@ func (h *Handler) AdminUserByID(w http.ResponseWriter, r *http.Request) {
 			WriteError(w, http.StatusBadRequest, "invalid_request", "role must be 'user' or 'admin'")
 			return
 		}
+
+		// Capture old role before update for audit.
+		oldUser, _ := store.GetUserByID(id)
+
 		user, err := store.UpdateUser(id, req.Name, req.Role)
 		if err != nil {
 			WriteError(w, http.StatusNotFound, "not_found", "user not found")
 			return
 		}
+
+		if req.Role != "" && oldUser != nil && oldUser.Role != req.Role {
+			h.recordAudit(r, admin.ID, "user", "user.role_change", "user", id,
+				map[string]string{"old_role": oldUser.Role, "new_role": req.Role})
+		}
+
 		WriteJSON(w, http.StatusOK, user)
 
 	case http.MethodDelete:
@@ -1039,7 +1064,8 @@ func (h *Handler) AdminListClients(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) AdminClientByID(w http.ResponseWriter, r *http.Request) {
-	if _, ok := h.requireAdmin(w, r); !ok {
+	admin, ok := h.requireAdmin(w, r)
+	if !ok {
 		return
 	}
 	id := strings.TrimPrefix(r.URL.Path, "/admin/clients/")
@@ -1079,10 +1105,20 @@ func (h *Handler) AdminClientByID(w http.ResponseWriter, r *http.Request) {
 		WriteJSON(w, http.StatusOK, client)
 
 	case http.MethodDelete:
+		// Capture client name before deletion for audit.
+		client, _ := store.GetClient(id)
+
 		if err := store.DeleteClient(id); err != nil {
 			WriteError(w, http.StatusNotFound, "not_found", "client not found")
 			return
 		}
+
+		details := map[string]string{}
+		if client != nil {
+			details["name"] = client.Name
+		}
+		h.recordAudit(r, admin.ID, "user", "client.delete", "client", id, details)
+
 		WriteJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 
 	default:

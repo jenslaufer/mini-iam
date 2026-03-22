@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jenslaufer/launch-kit/audit"
 	"github.com/jenslaufer/launch-kit/iam"
 	"github.com/jenslaufer/launch-kit/marketing"
 	"golang.org/x/crypto/bcrypt"
@@ -411,6 +412,7 @@ type ExportImportHandler struct {
 	mktStore         *marketing.Store
 	registry         *iam.TokenRegistry
 	PlatformTenantID string
+	AuditStore       *audit.Store
 }
 
 func NewExportImportHandler(tenantStore *Store, iamStore *iam.Store, mktStore *marketing.Store, registry *iam.TokenRegistry, platformTenantID string) *ExportImportHandler {
@@ -423,6 +425,13 @@ func NewExportImportHandler(tenantStore *Store, iamStore *iam.Store, mktStore *m
 	}
 }
 
+// recordAudit logs an audit entry if audit store is configured.
+func (h *ExportImportHandler) recordAudit(tenantID, actorID, actorType, action, targetType, targetID string, details interface{}) {
+	if h.AuditStore != nil {
+		h.AuditStore.ForTenant(tenantID).Record(actorID, actorType, action, targetType, targetID, details)
+	}
+}
+
 // Import handles POST /admin/tenants/import.
 func (h *ExportImportHandler) Import(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -430,7 +439,8 @@ func (h *ExportImportHandler) Import(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if _, ok := iam.CheckAdminCrossTenant(h.registry, h.iamStore, h.PlatformTenantID, w, r); !ok {
+	admin, ok := iam.CheckAdminCrossTenant(h.registry, h.iamStore, h.PlatformTenantID, w, r)
+	if !ok {
 		return
 	}
 
@@ -468,6 +478,13 @@ func (h *ExportImportHandler) Import(w http.ResponseWriter, r *http.Request) {
 		iam.WriteError(w, http.StatusConflict, "invalid_request", "tenant slug already exists")
 		return
 	}
+
+	actorID := ""
+	if admin != nil {
+		actorID = admin.ID
+	}
+	h.recordAudit(h.PlatformTenantID, actorID, "user", "tenant.import", "tenant", result.TenantID,
+		map[string]string{"slug": cfg.Slug})
 
 	iam.WriteJSON(w, http.StatusCreated, importResponse{
 		TenantID: result.TenantID,
@@ -618,7 +635,8 @@ func (h *ExportImportHandler) handleExport(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	if _, ok := iam.CheckAdminCrossTenant(h.registry, h.iamStore, h.PlatformTenantID, w, r); !ok {
+	admin, ok := iam.CheckAdminCrossTenant(h.registry, h.iamStore, h.PlatformTenantID, w, r)
+	if !ok {
 		return
 	}
 
@@ -839,11 +857,19 @@ func (h *ExportImportHandler) handleExport(w http.ResponseWriter, r *http.Reques
 		}
 	}
 
+	actorID := ""
+	if admin != nil {
+		actorID = admin.ID
+	}
+	h.recordAudit(h.PlatformTenantID, actorID, "user", "tenant.export", "tenant", tenantID,
+		map[string]string{"slug": tn.Slug, "mode": mode})
+
 	iam.WriteJSON(w, http.StatusOK, export)
 }
 
 func (h *ExportImportHandler) handleTenantByID(w http.ResponseWriter, r *http.Request, id string) {
-	if _, ok := iam.CheckAdminCrossTenant(h.registry, h.iamStore, h.PlatformTenantID, w, r); !ok {
+	admin, ok := iam.CheckAdminCrossTenant(h.registry, h.iamStore, h.PlatformTenantID, w, r)
+	if !ok {
 		return
 	}
 
@@ -866,10 +892,24 @@ func (h *ExportImportHandler) handleTenantByID(w http.ResponseWriter, r *http.Re
 	case http.MethodPut:
 		h.handleUpdateTenant(w, r, id)
 	case http.MethodDelete:
+		// Capture tenant slug before deletion for audit.
+		tn, _ := h.tenantStore.GetByID(id)
+
 		if err := h.tenantStore.Delete(id); err != nil {
 			iam.WriteError(w, http.StatusNotFound, "not_found", "tenant not found")
 			return
 		}
+
+		actorID := ""
+		if admin != nil {
+			actorID = admin.ID
+		}
+		details := map[string]string{}
+		if tn != nil {
+			details["slug"] = tn.Slug
+		}
+		h.recordAudit(h.PlatformTenantID, actorID, "user", "tenant.delete", "tenant", id, details)
+
 		iam.WriteJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 	default:
 		iam.WriteError(w, http.StatusMethodNotAllowed, "invalid_request", "method not allowed")

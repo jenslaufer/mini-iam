@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jenslaufer/launch-kit/audit"
 	"github.com/jenslaufer/launch-kit/iam"
 	"github.com/jenslaufer/launch-kit/marketing"
 	"github.com/jenslaufer/launch-kit/tenant"
@@ -130,9 +131,14 @@ func main() {
 	sender.SetTenantProvider(tenantStore)
 	sender.Start()
 
+	auditStore := audit.NewStore(db)
+
 	iamHandler := iam.NewHandler(iamStore, registry, issuer)
 	iamHandler.PlatformTenantID = defaultTenantID
 	iamHandler.Registration = tenantStore
+	iamHandler.AuditFn = func(tenantID, actorID, actorType, action, targetType, targetID string, details interface{}) {
+		auditStore.ForTenant(tenantID).Record(actorID, actorType, action, targetType, targetID, details)
+	}
 	iamHandler.Mailer = func(to, subject, htmlBody string) error {
 		return mailer.Send(to, subject, htmlBody, nil, nil)
 	}
@@ -175,6 +181,10 @@ func main() {
 
 	// Tenant management API (platform-admin-protected)
 	exportImportHandler := tenant.NewExportImportHandler(tenantStore, iamStore, marketingStore, registry, defaultTenantID)
+	exportImportHandler.AuditStore = auditStore
+
+	// Audit log API
+	auditHandler := audit.NewHandler(auditStore, iamStore, registry, defaultTenantID)
 	mux.HandleFunc("/admin/tenants", func(w http.ResponseWriter, r *http.Request) {
 		if _, ok := iam.CheckAdminCrossTenant(registry, iamStore, defaultTenantID, w, r); !ok {
 			return
@@ -225,6 +235,7 @@ func main() {
 			iam.WriteError(w, http.StatusMethodNotAllowed, "invalid_request", "method not allowed")
 		}
 	})
+	mux.HandleFunc("/admin/audit-log", auditHandler.ListAuditLog)
 	mux.HandleFunc("/admin/tenants/import", exportImportHandler.Import)
 	mux.HandleFunc("/admin/tenants/import-batch", exportImportHandler.ImportBatch)
 	mux.HandleFunc("/admin/tenants/", exportImportHandler.ExportOrDelete)
@@ -430,6 +441,18 @@ func migrate(db *sql.DB) error {
 		sent_at DATETIME,
 		opened_at DATETIME,
 		UNIQUE(campaign_id, contact_id)
+	);
+
+	CREATE TABLE IF NOT EXISTS audit_log (
+		id TEXT PRIMARY KEY,
+		tenant_id TEXT NOT NULL DEFAULT '',
+		actor_id TEXT NOT NULL,
+		actor_type TEXT NOT NULL,
+		action TEXT NOT NULL,
+		target_type TEXT NOT NULL,
+		target_id TEXT NOT NULL,
+		details TEXT NOT NULL DEFAULT '',
+		timestamp DATETIME NOT NULL
 	);
 	`
 	_, err := db.Exec(schema)
