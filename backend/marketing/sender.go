@@ -2,11 +2,13 @@ package marketing
 
 import (
 	"crypto/rand"
+	"crypto/tls"
 	"encoding/base64"
 	"fmt"
 	"html"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/smtp"
 	"net/url"
@@ -39,13 +41,67 @@ type SMTPMailer struct {
 	Password string
 	From     string
 	FromName string
+	TLSMode  string // "required" (default), "opportunistic", "none"
 }
 
 func (m *SMTPMailer) Send(to, subject, htmlBody string, headers map[string]string, attachments []Attachment) error {
 	msg := buildMIMEMessage(m.From, m.FromName, to, subject, htmlBody, headers, attachments)
-	auth := smtp.PlainAuth("", m.User, m.Password, m.Host)
 	addr := fmt.Sprintf("%s:%s", m.Host, m.Port)
-	return smtp.SendMail(addr, auth, m.From, []string{to}, msg)
+	tlsMode := m.TLSMode
+	if tlsMode == "" {
+		tlsMode = "required"
+	}
+	return sendMailWithTLS(addr, m.Host, m.User, m.Password, m.From, []string{to}, msg, tlsMode)
+}
+
+// sendMailWithTLS sends an email with configurable TLS enforcement.
+func sendMailWithTLS(addr, host, user, password, from string, to []string, msg []byte, tlsMode string) error {
+	conn, err := net.DialTimeout("tcp", addr, 30*time.Second)
+	if err != nil {
+		return fmt.Errorf("dial: %w", err)
+	}
+	c, err := smtp.NewClient(conn, host)
+	if err != nil {
+		conn.Close()
+		return fmt.Errorf("smtp client: %w", err)
+	}
+	defer c.Close()
+
+	if tlsMode != "none" {
+		if ok, _ := c.Extension("STARTTLS"); ok {
+			if err := c.StartTLS(&tls.Config{ServerName: host}); err != nil {
+				return fmt.Errorf("starttls: %w", err)
+			}
+		} else if tlsMode == "required" {
+			return fmt.Errorf("smtp server does not support STARTTLS and tls_mode is required")
+		}
+	}
+
+	if user != "" {
+		auth := smtp.PlainAuth("", user, password, host)
+		if err := c.Auth(auth); err != nil {
+			return fmt.Errorf("auth: %w", err)
+		}
+	}
+	if err := c.Mail(from); err != nil {
+		return fmt.Errorf("mail from: %w", err)
+	}
+	for _, addr := range to {
+		if err := c.Rcpt(addr); err != nil {
+			return fmt.Errorf("rcpt to: %w", err)
+		}
+	}
+	w, err := c.Data()
+	if err != nil {
+		return fmt.Errorf("data: %w", err)
+	}
+	if _, err := w.Write(msg); err != nil {
+		return fmt.Errorf("write: %w", err)
+	}
+	if err := w.Close(); err != nil {
+		return fmt.Errorf("close data: %w", err)
+	}
+	return c.Quit()
 }
 
 // buildMIMEMessage constructs a complete email message. If attachments are
@@ -115,7 +171,7 @@ func (m *LogMailer) Send(to, subject, htmlBody string, headers map[string]string
 
 // TenantProvider looks up tenant config. Implemented by tenant.Store.
 type TenantProvider interface {
-	GetSMTPConfig(tenantID string) (host, port, user, password, from, fromName string, rateMS int, err error)
+	GetSMTPConfig(tenantID string) (host, port, user, password, from, fromName string, rateMS int, tlsMode string, err error)
 	GetTenantSlug(tenantID string) (string, error)
 }
 
@@ -160,9 +216,9 @@ func (cs *CampaignSender) SetTenantProvider(p TenantProvider) {
 // mailerForTenant returns a tenant-specific SMTPMailer if configured, otherwise the global mailer.
 func (cs *CampaignSender) mailerForTenant(tenantID string) (Mailer, int) {
 	if cs.tenantProvider != nil {
-		host, port, user, pass, from, fromName, rateMS, err := cs.tenantProvider.GetSMTPConfig(tenantID)
+		host, port, user, pass, from, fromName, rateMS, tlsMode, err := cs.tenantProvider.GetSMTPConfig(tenantID)
 		if err == nil && host != "" {
-			return &SMTPMailer{Host: host, Port: port, User: user, Password: pass, From: from, FromName: fromName}, rateMS
+			return &SMTPMailer{Host: host, Port: port, User: user, Password: pass, From: from, FromName: fromName, TLSMode: tlsMode}, rateMS
 		}
 	}
 	return cs.mailer, cs.rateMS

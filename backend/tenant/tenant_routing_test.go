@@ -31,7 +31,7 @@ func newRoutingDB(t *testing.T) *sql.DB {
 		smtp_host TEXT NOT NULL DEFAULT '', smtp_port TEXT NOT NULL DEFAULT '',
 		smtp_user TEXT NOT NULL DEFAULT '', smtp_password TEXT NOT NULL DEFAULT '',
 		smtp_from TEXT NOT NULL DEFAULT '', smtp_from_name TEXT NOT NULL DEFAULT '',
-		smtp_rate_ms INTEGER NOT NULL DEFAULT 0,
+		smtp_rate_ms INTEGER NOT NULL DEFAULT 0, smtp_tls_mode TEXT NOT NULL DEFAULT '',
 		created_at DATETIME NOT NULL
 	);
 	CREATE TABLE IF NOT EXISTS users (

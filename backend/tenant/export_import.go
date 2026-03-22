@@ -494,6 +494,7 @@ type updateSMTPInput struct {
 	From     string `json:"from"`
 	FromName string `json:"from_name"`
 	RateMS   int    `json:"rate_ms"`
+	TLSMode  string `json:"tls_mode"`
 }
 
 func (h *ExportImportHandler) handleUpdateTenant(w http.ResponseWriter, r *http.Request, id string) {
@@ -532,6 +533,7 @@ func (h *ExportImportHandler) handleUpdateTenant(w http.ResponseWriter, r *http.
 			From:     req.SMTP.From,
 			FromName: req.SMTP.FromName,
 			RateMS:   req.SMTP.RateMS,
+			TLSMode:  req.SMTP.TLSMode,
 		}
 		if err := h.tenantStore.UpdateSMTP(id, smtp); err != nil {
 			iam.WriteError(w, http.StatusInternalServerError, "server_error", "failed to update SMTP settings")
@@ -652,8 +654,10 @@ func (h *ExportImportHandler) handleExport(w http.ResponseWriter, r *http.Reques
 			"smtp_from":      tn.SMTP.From,
 			"smtp_from_name": tn.SMTP.FromName,
 			"smtp_rate_ms":   tn.SMTP.RateMS,
+			"smtp_tls_mode":  tn.SMTP.TLSMode,
 		}
 		if migration {
+			// Password is already decrypted by scanTenant
 			smtpExport["smtp_password"] = tn.SMTP.Password
 		}
 		export["smtp"] = smtpExport

@@ -36,6 +36,22 @@ func main() {
 	iamStore := iam.NewStore(db)
 	marketingStore := marketing.NewStore(db)
 
+	// Configure SMTP password encryption
+	if encKey := os.Getenv("KEY_ENCRYPTION_KEY"); encKey != "" {
+		key := tenant.DeriveKey(encKey)
+		tenantStore.SetEncryptionKey(key)
+		log.Println("SMTP password encryption enabled (KEY_ENCRYPTION_KEY)")
+	} else if encKey := os.Getenv("SMTP_ENCRYPTION_KEY"); encKey != "" {
+		key := tenant.DeriveKey(encKey)
+		tenantStore.SetEncryptionKey(key)
+		log.Println("SMTP password encryption enabled (SMTP_ENCRYPTION_KEY)")
+	}
+
+	// Migrate existing plaintext SMTP passwords to encrypted
+	if err := tenantStore.MigrateEncryptPasswords(); err != nil {
+		log.Fatalf("Failed to migrate SMTP passwords: %v", err)
+	}
+
 	// Resolve default tenant
 	var defaultTenantID string
 	if defaultTenantSlug != "" {
@@ -457,6 +473,7 @@ func migrate(db *sql.DB) error {
 	db.Exec("ALTER TABLE tenants ADD COLUMN smtp_from_name TEXT NOT NULL DEFAULT ''")
 	db.Exec("ALTER TABLE tenants ADD COLUMN smtp_rate_ms INTEGER NOT NULL DEFAULT 0")
 	db.Exec("ALTER TABLE campaigns ADD COLUMN attachment_url TEXT NOT NULL DEFAULT ''")
+	db.Exec("ALTER TABLE tenants ADD COLUMN smtp_tls_mode TEXT NOT NULL DEFAULT ''")
 
 	return nil
 }
