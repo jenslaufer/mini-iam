@@ -14,10 +14,14 @@ func TestSecurityHeaders(t *testing.T) {
 	handler.ServeHTTP(rr, httptest.NewRequest("GET", "/", nil))
 
 	expected := map[string]string{
-		"X-Content-Type-Options":    "nosniff",
-		"X-Frame-Options":           "DENY",
-		"Strict-Transport-Security": "max-age=63072000; includeSubDomains",
-		"Content-Security-Policy":   "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'",
+		"X-Content-Type-Options":            "nosniff",
+		"X-Frame-Options":                   "DENY",
+		"Strict-Transport-Security":         "max-age=63072000; includeSubDomains",
+		"Content-Security-Policy":           "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'",
+		"Referrer-Policy":                   "strict-origin-when-cross-origin",
+		"Permissions-Policy":                "camera=(), microphone=(), geolocation=(), payment=()",
+		"Cross-Origin-Opener-Policy":        "same-origin",
+		"X-Permitted-Cross-Domain-Policies": "none",
 	}
 	for header, want := range expected {
 		if got := rr.Header().Get(header); got != want {
