@@ -57,8 +57,8 @@ func newRoutingDB(t *testing.T) *sql.DB {
 		revoked INTEGER NOT NULL DEFAULT 0
 	);
 	CREATE TABLE IF NOT EXISTS keys (
-		id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL DEFAULT '', private_key_pem TEXT NOT NULL,
-		created_at DATETIME NOT NULL
+		id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL DEFAULT '', kid TEXT NOT NULL DEFAULT '',
+		private_key_pem TEXT NOT NULL, created_at DATETIME NOT NULL
 	);
 	CREATE TABLE IF NOT EXISTS contacts (
 		id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL DEFAULT '', email TEXT NOT NULL,

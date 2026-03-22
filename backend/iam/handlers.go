@@ -858,6 +858,37 @@ func (h *Handler) requireAdmin(w http.ResponseWriter, r *http.Request) (*User, b
 	return user, true
 }
 
+// AdminRotateKey handles POST /admin/keys/rotate — triggers key rotation for the request's tenant.
+func (h *Handler) AdminRotateKey(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		WriteError(w, http.StatusMethodNotAllowed, "invalid_request", "method not allowed")
+		return
+	}
+	if _, ok := h.requireAdmin(w, r); !ok {
+		return
+	}
+
+	tenantID := tenantctx.FromContext(r.Context())
+	store := h.tenantStore(r)
+	if err := store.RotateKey(tenantID); err != nil {
+		WriteError(w, http.StatusInternalServerError, "server_error", "failed to rotate key")
+		return
+	}
+
+	// Load active keys to return the new kid.
+	keys, err := store.LoadActiveKeys(tenantID)
+	if err != nil || len(keys) == 0 {
+		WriteError(w, http.StatusInternalServerError, "server_error", "failed to load rotated keys")
+		return
+	}
+	newest := keys[len(keys)-1]
+
+	// Invalidate the registry cache so subsequent requests use the new key.
+	h.Registry.Invalidate(tenantID)
+
+	WriteJSON(w, http.StatusOK, map[string]string{"kid": newest.Kid})
+}
+
 // requireAuth validates the Bearer token and returns the authenticated user.
 // Unlike requireAdmin, it does not check for the admin role.
 func (h *Handler) requireAuth(w http.ResponseWriter, r *http.Request) (*User, bool) {

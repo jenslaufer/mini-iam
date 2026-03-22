@@ -55,17 +55,24 @@ func (tr *TokenRegistry) ForTenant(tenantID, slug string) (*TokenService, error)
 	tr.mu.Unlock()
 
 	scopedStore := tr.store.ForTenant(tenantID)
-	key, err := scopedStore.LoadOrCreateRSAKey()
-	if err != nil {
-		return nil, err
-	}
 
 	issuer := tr.baseIssuer
 	if slug != "" {
 		issuer = tr.baseIssuer + "/t/" + slug
 	}
 
-	ts = NewTokenService(key, issuer)
+	// Load all active keys for multi-key support (rotation grace period).
+	keys, err := scopedStore.LoadActiveKeys(tenantID)
+	if err != nil || len(keys) == 0 {
+		// Fallback: load or create single key (backward compat / first run).
+		key, err := scopedStore.LoadOrCreateRSAKey()
+		if err != nil {
+			return nil, err
+		}
+		ts = NewTokenService(key, issuer)
+	} else {
+		ts = NewTokenServiceMultiKey(keys, issuer)
+	}
 
 	tr.mu.Lock()
 	tr.cache[tenantID] = ts
@@ -73,8 +80,14 @@ func (tr *TokenRegistry) ForTenant(tenantID, slug string) (*TokenService, error)
 	return ts, nil
 }
 
+// Invalidate removes the cached TokenService for a tenant, forcing a reload on next access.
+func (tr *TokenRegistry) Invalidate(tenantID string) {
+	tr.mu.Lock()
+	delete(tr.cache, tenantID)
+	tr.mu.Unlock()
+}
+
 // BaseIssuer returns the base issuer URL.
 func (tr *TokenRegistry) BaseIssuer() string {
 	return tr.baseIssuer
 }
-

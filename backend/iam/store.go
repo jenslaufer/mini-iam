@@ -1,10 +1,13 @@
 package iam
 
 import (
+	"crypto/aes"
+	"crypto/cipher"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
 	"database/sql"
+	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
@@ -15,18 +18,35 @@ import (
 	_ "modernc.org/sqlite"
 )
 
+// KeyRecord holds a single RSA key with its metadata.
+type KeyRecord struct {
+	ID         string
+	TenantID   string
+	Kid        string
+	PrivateKey *rsa.PrivateKey
+	CreatedAt  time.Time
+}
+
 type Store struct {
-	db       *sql.DB
-	tenantID string
+	db            *sql.DB
+	tenantID      string
+	encryptionKey []byte        // 32-byte AES-256 key; nil = no encryption
+	KeySize       int           // RSA key size in bits; 0 = default (3072)
+	GracePeriod   time.Duration // how long old keys remain active; 0 = default (24h)
 }
 
 func NewStore(db *sql.DB) *Store {
 	return &Store{db: db}
 }
 
+// SetEncryptionKey sets the AES-256-GCM key for encrypting private keys at rest.
+func (s *Store) SetEncryptionKey(key []byte) {
+	s.encryptionKey = key
+}
+
 // ForTenant returns a copy of the store scoped to the given tenant.
 func (s *Store) ForTenant(tenantID string) *Store {
-	return &Store{db: s.db, tenantID: tenantID}
+	return &Store{db: s.db, tenantID: tenantID, encryptionKey: s.encryptionKey, KeySize: s.KeySize, GracePeriod: s.GracePeriod}
 }
 
 // TenantID returns the tenant scope of this store.
@@ -46,18 +66,100 @@ func (s *Store) Close() error {
 
 // --- RSA Key ---
 
+func (s *Store) keySize() int {
+	if s.KeySize > 0 {
+		return s.KeySize
+	}
+	return 3072
+}
+
+func (s *Store) gracePeriod() time.Duration {
+	if s.GracePeriod > 0 {
+		return s.GracePeriod
+	}
+	return 24 * time.Hour
+}
+
+// encryptPEM encrypts PEM bytes with AES-256-GCM and returns base64-encoded ciphertext.
+func (s *Store) encryptPEM(plaintext []byte) (string, error) {
+	if s.encryptionKey == nil {
+		return string(plaintext), nil
+	}
+	block, err := aes.NewCipher(s.encryptionKey)
+	if err != nil {
+		return "", fmt.Errorf("aes cipher: %w", err)
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return "", fmt.Errorf("gcm: %w", err)
+	}
+	nonce := make([]byte, gcm.NonceSize())
+	if _, err := rand.Read(nonce); err != nil {
+		return "", fmt.Errorf("nonce: %w", err)
+	}
+	ciphertext := gcm.Seal(nonce, nonce, plaintext, nil)
+	return base64.StdEncoding.EncodeToString(ciphertext), nil
+}
+
+// decryptPEM decrypts base64-encoded AES-256-GCM ciphertext back to PEM bytes.
+// If the data is already plaintext PEM (migration case), it re-encrypts in place.
+func (s *Store) decryptPEM(stored string, rowID string) ([]byte, error) {
+	// If no encryption key, return as-is.
+	if s.encryptionKey == nil {
+		return []byte(stored), nil
+	}
+
+	// Check if this is plaintext PEM (pre-migration).
+	if blk, _ := pem.Decode([]byte(stored)); blk != nil {
+		// Re-encrypt in place for migration.
+		encrypted, err := s.encryptPEM([]byte(stored))
+		if err != nil {
+			return nil, fmt.Errorf("migrate encrypt: %w", err)
+		}
+		s.db.Exec("UPDATE keys SET private_key_pem = ? WHERE id = ?", encrypted, rowID)
+		return []byte(stored), nil
+	}
+
+	// Decode base64 ciphertext.
+	ciphertext, err := base64.StdEncoding.DecodeString(stored)
+	if err != nil {
+		return nil, fmt.Errorf("base64 decode: %w", err)
+	}
+	block, err := aes.NewCipher(s.encryptionKey)
+	if err != nil {
+		return nil, fmt.Errorf("aes cipher: %w", err)
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, fmt.Errorf("gcm: %w", err)
+	}
+	nonceSize := gcm.NonceSize()
+	if len(ciphertext) < nonceSize {
+		return nil, fmt.Errorf("ciphertext too short")
+	}
+	plaintext, err := gcm.Open(nil, ciphertext[:nonceSize], ciphertext[nonceSize:], nil)
+	if err != nil {
+		return nil, fmt.Errorf("decrypt: %w", err)
+	}
+	return plaintext, nil
+}
+
 func (s *Store) LoadOrCreateRSAKey() (*rsa.PrivateKey, error) {
-	var pemData string
-	err := s.db.QueryRow("SELECT private_key_pem FROM keys WHERE tenant_id = ? LIMIT 1", s.tenantID).Scan(&pemData)
+	var id, pemData string
+	err := s.db.QueryRow("SELECT id, private_key_pem FROM keys WHERE tenant_id = ? ORDER BY created_at DESC LIMIT 1", s.tenantID).Scan(&id, &pemData)
 	if err == nil {
-		block, _ := pem.Decode([]byte(pemData))
+		decoded, err := s.decryptPEM(pemData, id)
+		if err != nil {
+			return nil, fmt.Errorf("decrypt key: %w", err)
+		}
+		block, _ := pem.Decode(decoded)
 		if block == nil {
 			return nil, fmt.Errorf("invalid PEM block")
 		}
 		return x509.ParsePKCS1PrivateKey(block.Bytes)
 	}
 
-	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	key, err := rsa.GenerateKey(rand.Reader, s.keySize())
 	if err != nil {
 		return nil, fmt.Errorf("generate RSA key: %w", err)
 	}
@@ -67,15 +169,86 @@ func (s *Store) LoadOrCreateRSAKey() (*rsa.PrivateKey, error) {
 		Bytes: x509.MarshalPKCS1PrivateKey(key),
 	})
 
+	stored, err := s.encryptPEM(pemBytes)
+	if err != nil {
+		return nil, fmt.Errorf("encrypt key: %w", err)
+	}
+
+	kid := fmt.Sprintf("%d", time.Now().UnixNano())
 	_, err = s.db.Exec(
-		"INSERT INTO keys (id, tenant_id, private_key_pem, created_at) VALUES (?, ?, ?, ?)",
-		uuid.NewString(), s.tenantID, string(pemBytes), time.Now().UTC(),
+		"INSERT INTO keys (id, tenant_id, kid, private_key_pem, created_at) VALUES (?, ?, ?, ?, ?)",
+		uuid.NewString(), s.tenantID, kid, stored, time.Now().UTC(),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("store RSA key: %w", err)
 	}
 
 	return key, nil
+}
+
+// RotateKey generates a new RSA key with a unique kid for the given tenant.
+func (s *Store) RotateKey(tenantID string) error {
+	scoped := s.ForTenant(tenantID)
+	key, err := rsa.GenerateKey(rand.Reader, scoped.keySize())
+	if err != nil {
+		return fmt.Errorf("generate RSA key: %w", err)
+	}
+
+	pemBytes := pem.EncodeToMemory(&pem.Block{
+		Type:  "RSA PRIVATE KEY",
+		Bytes: x509.MarshalPKCS1PrivateKey(key),
+	})
+
+	stored, err := scoped.encryptPEM(pemBytes)
+	if err != nil {
+		return fmt.Errorf("encrypt key: %w", err)
+	}
+
+	kid := fmt.Sprintf("%d", time.Now().UnixNano())
+	_, err = s.db.Exec(
+		"INSERT INTO keys (id, tenant_id, kid, private_key_pem, created_at) VALUES (?, ?, ?, ?, ?)",
+		uuid.NewString(), tenantID, kid, stored, time.Now().UTC(),
+	)
+	return err
+}
+
+// LoadActiveKeys returns all keys for a tenant that are within the grace period,
+// ordered by created_at ascending (oldest first, newest last).
+func (s *Store) LoadActiveKeys(tenantID string) ([]KeyRecord, error) {
+	cutoff := time.Now().UTC().Add(-s.gracePeriod())
+	rows, err := s.db.Query(
+		"SELECT id, tenant_id, kid, private_key_pem, created_at FROM keys WHERE tenant_id = ? AND created_at > ? ORDER BY created_at ASC",
+		tenantID, cutoff,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	scoped := s.ForTenant(tenantID)
+	var records []KeyRecord
+	for rows.Next() {
+		var r KeyRecord
+		var pemData string
+		if err := rows.Scan(&r.ID, &r.TenantID, &r.Kid, &pemData, &r.CreatedAt); err != nil {
+			return nil, err
+		}
+		decoded, err := scoped.decryptPEM(pemData, r.ID)
+		if err != nil {
+			return nil, fmt.Errorf("decrypt key %s: %w", r.ID, err)
+		}
+		block, _ := pem.Decode(decoded)
+		if block == nil {
+			return nil, fmt.Errorf("invalid PEM for key %s", r.ID)
+		}
+		key, err := x509.ParsePKCS1PrivateKey(block.Bytes)
+		if err != nil {
+			return nil, err
+		}
+		r.PrivateKey = key
+		records = append(records, r)
+	}
+	return records, rows.Err()
 }
 
 // --- Users ---

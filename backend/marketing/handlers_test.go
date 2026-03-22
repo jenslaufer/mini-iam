@@ -93,7 +93,8 @@ func newTestHandlerDB(t *testing.T) *sql.DB {
 		scope TEXT NOT NULL DEFAULT '', expires_at DATETIME NOT NULL, revoked INTEGER NOT NULL DEFAULT 0
 	);
 	CREATE TABLE keys (
-		id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL DEFAULT '', private_key_pem TEXT NOT NULL, created_at DATETIME NOT NULL
+		id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL DEFAULT '', kid TEXT NOT NULL DEFAULT '',
+		private_key_pem TEXT NOT NULL, created_at DATETIME NOT NULL
 	);
 	CREATE TABLE contacts (
 		id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL DEFAULT '', email TEXT NOT NULL, name TEXT NOT NULL DEFAULT '',

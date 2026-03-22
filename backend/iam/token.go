@@ -13,13 +13,41 @@ import (
 
 type TokenService struct {
 	privateKey *rsa.PrivateKey
+	kid        string
+	keys       []keyEntry // all active keys for JWKS + validation
 	issuer     string
+}
+
+type keyEntry struct {
+	kid        string
+	privateKey *rsa.PrivateKey
 }
 
 func (ts *TokenService) Issuer() string { return ts.issuer }
 
 func NewTokenService(key *rsa.PrivateKey, issuer string) *TokenService {
-	return &TokenService{privateKey: key, issuer: issuer}
+	return &TokenService{
+		privateKey: key,
+		kid:        "main",
+		keys:       []keyEntry{{kid: "main", privateKey: key}},
+		issuer:     issuer,
+	}
+}
+
+// NewTokenServiceMultiKey creates a TokenService with multiple keys.
+// The last key in the slice is used for signing new tokens.
+func NewTokenServiceMultiKey(records []KeyRecord, issuer string) *TokenService {
+	entries := make([]keyEntry, len(records))
+	for i, r := range records {
+		entries[i] = keyEntry{kid: r.Kid, privateKey: r.PrivateKey}
+	}
+	newest := entries[len(entries)-1]
+	return &TokenService{
+		privateKey: newest.privateKey,
+		kid:        newest.kid,
+		keys:       entries,
+		issuer:     issuer,
+	}
 }
 
 func (ts *TokenService) CreateAccessToken(user *User, audience string, tenantID string) (string, error) {
@@ -37,7 +65,7 @@ func (ts *TokenService) CreateAccessToken(user *User, audience string, tenantID 
 	}
 
 	token := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
-	token.Header["kid"] = "main"
+	token.Header["kid"] = ts.kid
 	return token.SignedString(ts.privateKey)
 }
 
@@ -54,7 +82,7 @@ func (ts *TokenService) CreateServiceToken(clientID, audience, tenantID string) 
 	}
 
 	token := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
-	token.Header["kid"] = "main"
+	token.Header["kid"] = ts.kid
 	return token.SignedString(ts.privateKey)
 }
 
@@ -76,7 +104,7 @@ func (ts *TokenService) CreateIDToken(user *User, audience, nonce string, tenant
 	}
 
 	token := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
-	token.Header["kid"] = "main"
+	token.Header["kid"] = ts.kid
 	return token.SignedString(ts.privateKey)
 }
 
@@ -90,6 +118,13 @@ func (ts *TokenService) ValidateAccessToken(tokenString string, expectedAudience
 	}
 
 	token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
+		kid, _ := token.Header["kid"].(string)
+		for _, k := range ts.keys {
+			if k.kid == kid {
+				return &k.privateKey.PublicKey, nil
+			}
+		}
+		// Fallback to primary key if kid not found (backward compat).
 		return &ts.privateKey.PublicKey, nil
 	}, opts...)
 	if err != nil {
@@ -103,20 +138,22 @@ func (ts *TokenService) ValidateAccessToken(tokenString string, expectedAudience
 	return claims, nil
 }
 
-// JWKS returns the JSON Web Key Set containing the public key.
+// JWKS returns the JSON Web Key Set containing all active public keys.
 func (ts *TokenService) JWKS() map[string]interface{} {
-	pub := &ts.privateKey.PublicKey
+	jwkKeys := make([]map[string]interface{}, len(ts.keys))
+	for i, k := range ts.keys {
+		pub := &k.privateKey.PublicKey
+		jwkKeys[i] = map[string]interface{}{
+			"kty": "RSA",
+			"use": "sig",
+			"alg": "RS256",
+			"kid": k.kid,
+			"n":   base64URLEncode(pub.N.Bytes()),
+			"e":   base64URLEncode(big.NewInt(int64(pub.E)).Bytes()),
+		}
+	}
 	return map[string]interface{}{
-		"keys": []map[string]interface{}{
-			{
-				"kty": "RSA",
-				"use": "sig",
-				"alg": "RS256",
-				"kid": "main",
-				"n":   base64URLEncode(pub.N.Bytes()),
-				"e":   base64URLEncode(big.NewInt(int64(pub.E)).Bytes()),
-			},
-		},
+		"keys": jwkKeys,
 	}
 }
 
@@ -138,3 +175,4 @@ func VerifyPKCE(codeVerifier, codeChallenge, method string) bool {
 func (ts *TokenService) JWKSBytes() ([]byte, error) {
 	return json.Marshal(ts.JWKS())
 }
+

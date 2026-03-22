@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"database/sql"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -25,6 +26,7 @@ func main() {
 	adminEmail := os.Getenv("ADMIN_EMAIL")
 	adminPassword := os.Getenv("ADMIN_PASSWORD")
 	defaultTenantSlug := os.Getenv("DEFAULT_TENANT")
+	keyEncryptionKeyB64 := os.Getenv("KEY_ENCRYPTION_KEY")
 
 	db, err := openDB(envOr("DATABASE_PATH", "launch-kit.db"))
 	if err != nil {
@@ -34,6 +36,14 @@ func main() {
 
 	tenantStore := tenant.NewStore(db)
 	iamStore := iam.NewStore(db)
+	if keyEncryptionKeyB64 != "" {
+		encKey, err := base64.StdEncoding.DecodeString(keyEncryptionKeyB64)
+		if err != nil || len(encKey) != 32 {
+			log.Fatalf("KEY_ENCRYPTION_KEY must be 32 bytes base64-encoded (got %d bytes)", len(encKey))
+		}
+		iamStore.SetEncryptionKey(encKey)
+		log.Println("RSA key encryption enabled (AES-256-GCM)")
+	}
 	marketingStore := marketing.NewStore(db)
 
 	// Resolve default tenant
@@ -156,6 +166,7 @@ func main() {
 	mux.HandleFunc("/admin/users/", iamHandler.AdminUserByID)
 	mux.HandleFunc("/admin/clients", iamHandler.AdminListClients)
 	mux.HandleFunc("/admin/clients/", iamHandler.AdminClientByID)
+	mux.HandleFunc("/admin/keys/rotate", iamHandler.AdminRotateKey)
 
 	// Marketing routes (admin-protected)
 	mux.HandleFunc("/admin/contacts/import", marketingHandler.AdminImportContacts)
@@ -367,6 +378,7 @@ func migrate(db *sql.DB) error {
 	CREATE TABLE IF NOT EXISTS keys (
 		id TEXT PRIMARY KEY,
 		tenant_id TEXT NOT NULL DEFAULT '',
+		kid TEXT NOT NULL DEFAULT '',
 		private_key_pem TEXT NOT NULL,
 		created_at DATETIME NOT NULL
 	);
@@ -446,6 +458,7 @@ func migrate(db *sql.DB) error {
 	db.Exec("ALTER TABLE auth_codes ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''")
 	db.Exec("ALTER TABLE refresh_tokens ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''")
 	db.Exec("ALTER TABLE keys ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''")
+	db.Exec("ALTER TABLE keys ADD COLUMN kid TEXT NOT NULL DEFAULT ''")
 	db.Exec("ALTER TABLE segments ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''")
 	db.Exec("ALTER TABLE campaigns ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''")
 	db.Exec("ALTER TABLE tenants ADD COLUMN registration_enabled INTEGER NOT NULL DEFAULT 0")
