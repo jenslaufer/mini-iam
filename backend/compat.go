@@ -126,6 +126,7 @@ func (h *Handler) AdminDeleteClient(w http.ResponseWriter, r *http.Request) { h.
 func (h *Handler) Activate(w http.ResponseWriter, r *http.Request)        { h.iam.Activate(w, r) }
 func (h *Handler) ForgotPassword(w http.ResponseWriter, r *http.Request)  { h.iam.ForgotPassword(w, r) }
 func (h *Handler) ResetPassword(w http.ResponseWriter, r *http.Request)   { h.iam.ResetPassword(w, r) }
+func (h *Handler) ChangePassword(w http.ResponseWriter, r *http.Request) { h.iam.ChangePassword(w, r) }
 
 // Marketing handler methods
 func (h *Handler) AdminContacts(w http.ResponseWriter, r *http.Request) {

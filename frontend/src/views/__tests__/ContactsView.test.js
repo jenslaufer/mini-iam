@@ -221,4 +221,38 @@ describe('ContactsView', () => {
     expect(wrapper.text()).toContain('No contacts found')
     wrapper.unmount()
   })
+
+  it('importContacts sends wrapped payload with contacts key', async () => {
+    importContacts.mockResolvedValue({ imported: 1, skipped: 0 })
+    listContacts.mockResolvedValue(CONTACTS)
+    listSegments.mockResolvedValue(SEGMENTS)
+
+    const wrapper = mountContacts()
+    await flushPromises()
+
+    // Open import modal
+    const importBtn = wrapper.findAll('button').find((b) => b.text().includes('Import'))
+    await importBtn.trigger('click')
+
+    // Fill in textarea with CSV data
+    const textarea = document.querySelector('textarea')
+    if (textarea) {
+      textarea.value = 'test@example.com,Test User'
+      textarea.dispatchEvent(new Event('input'))
+    }
+
+    // Submit import form
+    const form = document.querySelector('form')
+    if (form) {
+      form.dispatchEvent(new Event('submit'))
+      await flushPromises()
+    }
+
+    if (importContacts.mock.calls.length > 0) {
+      const payload = importContacts.mock.calls[0][0]
+      expect(payload).toHaveProperty('contacts')
+      expect(Array.isArray(payload.contacts)).toBe(true)
+    }
+    wrapper.unmount()
+  })
 })

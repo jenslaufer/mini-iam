@@ -1,8 +1,10 @@
 package marketing
 
 import (
+	"encoding/json"
 	"fmt"
 	"html"
+	"io"
 	"net/http"
 	"strings"
 
@@ -166,8 +168,26 @@ func (h *Handler) AdminImportContacts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Accept both wrapped {"contacts":[...], "segment_ids":[...]} and bare JSON array.
+	r.Body = http.MaxBytesReader(w, r.Body, iam.MaxBodySize)
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		iam.WriteError(w, http.StatusBadRequest, "invalid_request", "failed to read body")
+		return
+	}
+
 	var contacts []ContactImport
-	if !iam.DecodeJSON(w, r, &contacts) {
+	var segmentIDs []string
+
+	var wrapper struct {
+		Contacts   []ContactImport `json:"contacts"`
+		SegmentIDs []string        `json:"segment_ids"`
+	}
+	if err := json.Unmarshal(body, &wrapper); err == nil && wrapper.Contacts != nil {
+		contacts = wrapper.Contacts
+		segmentIDs = wrapper.SegmentIDs
+	} else if err := json.Unmarshal(body, &contacts); err != nil {
+		iam.WriteError(w, http.StatusBadRequest, "invalid_request", "invalid JSON body")
 		return
 	}
 
@@ -178,22 +198,34 @@ func (h *Handler) AdminImportContacts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Add contacts to segments if specified
+	// Assign contacts to segments specified in the wrapper
+	for _, segID := range segmentIDs {
+		seg, err := store.GetSegmentByID(segID)
+		if err != nil || seg == nil {
+			continue
+		}
+		for _, ci := range contacts {
+			contact, err := store.GetContactByEmail(ci.Email)
+			if err != nil {
+				continue
+			}
+			store.AddContactToSegment(contact.ID, seg.ID)
+		}
+	}
+
+	// Also handle per-contact segment IDs
 	for _, ci := range contacts {
 		if len(ci.Segments) > 0 {
 			contact, err := store.GetContactByEmail(ci.Email)
 			if err != nil {
 				continue
 			}
-			for _, segName := range ci.Segments {
-				// Find segment by name, create if not exists
-				segs, _ := store.ListSegments()
-				for _, seg := range segs {
-					if seg.Name == segName {
-						store.AddContactToSegment(contact.ID, seg.ID)
-						break
-					}
+			for _, segID := range ci.Segments {
+				seg, err := store.GetSegmentByID(segID)
+				if err != nil || seg == nil {
+					continue
 				}
+				store.AddContactToSegment(contact.ID, seg.ID)
 			}
 		}
 	}

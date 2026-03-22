@@ -67,6 +67,7 @@ func SetupServer(store *Store, tokenService *TokenService) http.Handler {
 	mux.HandleFunc("/track/", h.TrackOpen)
 	mux.HandleFunc("/unsubscribe/", h.Unsubscribe)
 	mux.HandleFunc("/activate/", h.Activate)
+	mux.HandleFunc("/password", h.ChangePassword)
 	mux.HandleFunc("/forgot-password", h.ForgotPassword)
 	mux.HandleFunc("/reset-password/", h.ResetPassword)
 
@@ -5525,4 +5526,156 @@ func TestFloatEnvOrInvalidFallsBack(t *testing.T) {
 	if v := floatEnvOr("TEST_FLOAT_BAD", 10); v != 10 {
 		t.Fatalf("got %f, want 10 (fallback)", v)
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Bug fix: Contact import wrapped payload + segment IDs
+// ---------------------------------------------------------------------------
+
+func TestContactImportWrappedPayload(t *testing.T) {
+	env := newTestEnv(t)
+	token := loginAsAdmin(t, env)
+
+	// Create two segments
+	seg1 := createSegment(t, env, token, "ImportSeg1", "")
+	seg2 := createSegment(t, env, token, "ImportSeg2", "")
+	seg1ID := seg1["id"].(string)
+	seg2ID := seg2["id"].(string)
+
+	// Import contacts using wrapped payload with segment_ids
+	body := fmt.Sprintf(`{"contacts":[{"email":"wrap1@test.com","name":"Wrap1"},{"email":"wrap2@test.com","name":"Wrap2"}],"segment_ids":[%q,%q]}`, seg1ID, seg2ID)
+	resp := doRequest(t, env.srv, "POST", "/admin/contacts/import", token, body)
+	assertStatus(t, resp, http.StatusOK)
+
+	var result map[string]int
+	decodeJSON(t, resp, &result)
+	if result["imported"] != 2 {
+		t.Fatalf("expected 2 imported, got %d", result["imported"])
+	}
+
+	// Verify contacts are assigned to both segments via segment detail API
+	for _, segID := range []string{seg1ID, seg2ID} {
+		segResp := doRequest(t, env.srv, "GET", "/admin/segments/"+segID, token, "")
+		assertStatus(t, segResp, http.StatusOK)
+		var segDetail map[string]any
+		decodeJSON(t, segResp, &segDetail)
+		contacts, ok := segDetail["contacts"].([]any)
+		if !ok {
+			t.Fatalf("segment %s: missing contacts field", segID)
+		}
+		if len(contacts) != 2 {
+			t.Errorf("segment %s: expected 2 contacts, got %d", segID, len(contacts))
+		}
+	}
+}
+
+func TestContactImportBareArray(t *testing.T) {
+	env := newTestEnv(t)
+	token := loginAsAdmin(t, env)
+
+	// Import contacts using bare JSON array (backwards compat)
+	body := `[{"email":"bare1@test.com","name":"Bare1"},{"email":"bare2@test.com","name":"Bare2"}]`
+	resp := doRequest(t, env.srv, "POST", "/admin/contacts/import", token, body)
+	assertStatus(t, resp, http.StatusOK)
+
+	var result map[string]int
+	decodeJSON(t, resp, &result)
+	if result["imported"] != 2 {
+		t.Fatalf("expected 2 imported, got %d", result["imported"])
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Bug fix: tokenAuthorizationCode Basic auth
+// ---------------------------------------------------------------------------
+
+func TestTokenAuthCodeBasicAuth(t *testing.T) {
+	srv := newTestServer(t)
+
+	registerUser(t, srv, "basicauth@example.com", "password123", "BasicAuth User")
+	client := registerClient(t, srv, "BasicApp", []string{"http://localhost:3000/callback"})
+	verifier, challenge := pkceChallenge(t)
+
+	loc := authorizeCode(t, srv, "basicauth@example.com", "password123", client, verifier, challenge)
+	code := extractCode(t, loc)
+
+	// Exchange using Basic auth header instead of form params
+	values := url.Values{
+		"grant_type":    {"authorization_code"},
+		"code":          {code},
+		"redirect_uri":  {client.RedirectURIs[0]},
+		"code_verifier": {verifier},
+	}
+	req, err := http.NewRequest("POST", srv.URL+"/token", strings.NewReader(values.Encode()))
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.SetBasicAuth(client.ClientID, client.ClientSecret)
+
+	noRedirect := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	}}
+	resp, err := noRedirect.Do(req)
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	assertStatus(t, resp, http.StatusOK)
+
+	var tr TokenResponse
+	decodeJSON(t, resp, &tr)
+	if tr.AccessToken == "" {
+		t.Fatal("expected non-empty access_token")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Bug fix: Password > 72 bytes rejected
+// ---------------------------------------------------------------------------
+
+func TestRegisterPasswordTooLong(t *testing.T) {
+	srv := newTestServer(t)
+	longPass := strings.Repeat("a", 73)
+	resp := doJSON(t, srv, "/register", map[string]any{
+		"email":    "long@example.com",
+		"password": longPass,
+		"name":     "Long Password",
+	})
+	assertStatus(t, resp, http.StatusBadRequest)
+	assertErrorCode(t, resp, "invalid_request")
+}
+
+func TestActivatePasswordTooLong(t *testing.T) {
+	env := newTestEnv(t)
+	token := loginAsAdmin(t, env)
+
+	// Create a contact to get an invite token
+	resp := doRequest(t, env.srv, "POST", "/admin/contacts", token,
+		`{"email":"activate-long@test.com","name":"Activate Long"}`)
+	assertStatus(t, resp, http.StatusCreated)
+	var c map[string]any
+	decodeJSON(t, resp, &c)
+	inviteToken := c["invite_token"].(string)
+
+	// Try activating with a password > 72 bytes (JSON path)
+	longPass := strings.Repeat("a", 73)
+	activateResp := doRequest(t, env.srv, "POST", "/activate/"+inviteToken, "",
+		fmt.Sprintf(`{"password":%q}`, longPass))
+	assertStatus(t, activateResp, http.StatusBadRequest)
+	assertErrorCode(t, activateResp, "invalid_request")
+}
+
+func TestChangePasswordTooLong(t *testing.T) {
+	srv := newTestServer(t)
+
+	registerUser(t, srv, "chpw@example.com", "password123", "ChPw User")
+	tr := loginUser(t, srv, "chpw@example.com", "password123")
+
+	longPass := strings.Repeat("a", 73)
+	resp := doJSONWithAuth(t, srv, "/password", map[string]any{
+		"current_password": "password123",
+		"new_password":     longPass,
+	}, tr.AccessToken)
+	assertStatus(t, resp, http.StatusBadRequest)
+	assertErrorCode(t, resp, "invalid_request")
 }

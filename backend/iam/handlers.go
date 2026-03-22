@@ -112,6 +112,10 @@ func (h *Handler) Register(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, http.StatusBadRequest, "invalid_request", "password must be at least 8 characters")
 		return
 	}
+	if len(req.Password) > 72 {
+		WriteError(w, http.StatusBadRequest, "invalid_request", "password must not exceed 72 bytes")
+		return
+	}
 	if req.Name == "" {
 		WriteError(w, http.StatusBadRequest, "invalid_request", "name required")
 		return
@@ -413,8 +417,7 @@ func (h *Handler) tokenAuthorizationCode(w http.ResponseWriter, r *http.Request)
 	code := r.FormValue("code")
 	redirectURI := r.FormValue("redirect_uri")
 	codeVerifier := r.FormValue("code_verifier")
-	clientID := r.FormValue("client_id")
-	clientSecret := r.FormValue("client_secret")
+	clientID, clientSecret := extractClientCredentials(r)
 
 	store := h.tenantStore(r)
 	ac, err := store.ConsumeAuthCode(code)
@@ -1185,6 +1188,18 @@ button:hover{background:#1d4ed8}
 			}
 			return
 		}
+		if len(password) > 72 {
+			if isJSON {
+				WriteError(w, http.StatusBadRequest, "invalid_request", "password must not exceed 72 bytes")
+			} else {
+				w.Header().Set("Content-Type", "text/html")
+				w.WriteHeader(http.StatusBadRequest)
+				w.Write([]byte(`<!DOCTYPE html><html><head><title>launch-kit</title>
+<style>body{font-family:system-ui,sans-serif;display:flex;justify-content:center;align-items:center;min-height:100vh;margin:0;background:#f5f5f5}div{background:#fff;padding:2rem;border-radius:8px;box-shadow:0 2px 8px rgba(0,0,0,0.1);width:320px;text-align:center}</style>
+</head><body><div><h2>Password too long</h2><p>Password must not exceed 72 bytes.</p><p><a href="javascript:history.back()">Try again</a></p></div></body></html>`))
+			}
+			return
+		}
 
 		user, err := store.ActivateContact(token, password)
 		if err != nil {
@@ -1350,6 +1365,18 @@ button:hover{background:#1d4ed8}
 				w.Write([]byte(`<!DOCTYPE html><html><head><title>launch-kit</title>
 <style>body{font-family:system-ui,sans-serif;display:flex;justify-content:center;align-items:center;min-height:100vh;margin:0;background:#f5f5f5}div{background:#fff;padding:2rem;border-radius:8px;box-shadow:0 2px 8px rgba(0,0,0,0.1);width:320px;text-align:center}</style>
 </head><body><div><h2>Password too short</h2><p>Password must be at least 8 characters.</p><p><a href="javascript:history.back()">Try again</a></p></div></body></html>`))
+			}
+			return
+		}
+		if len(password) > 72 {
+			if isJSON {
+				WriteError(w, http.StatusBadRequest, "invalid_request", "password must not exceed 72 bytes")
+			} else {
+				w.Header().Set("Content-Type", "text/html")
+				w.WriteHeader(http.StatusBadRequest)
+				w.Write([]byte(`<!DOCTYPE html><html><head><title>launch-kit</title>
+<style>body{font-family:system-ui,sans-serif;display:flex;justify-content:center;align-items:center;min-height:100vh;margin:0;background:#f5f5f5}div{background:#fff;padding:2rem;border-radius:8px;box-shadow:0 2px 8px rgba(0,0,0,0.1);width:320px;text-align:center}</style>
+</head><body><div><h2>Password too long</h2><p>Password must not exceed 72 bytes.</p><p><a href="javascript:history.back()">Try again</a></p></div></body></html>`))
 			}
 			return
 		}
