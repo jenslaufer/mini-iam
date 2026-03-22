@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"fmt"
+	"html"
 	"io"
 	"log"
 	"net/http"
@@ -303,8 +304,8 @@ func (cs *CampaignSender) processCampaign(campaignID string, tenantID string) {
 		inviteURL := fmt.Sprintf("%s/activate/%s", baseURL, cs.getInviteToken(store, r.ContactID))
 
 		body := campaign.HTMLBody
-		body = strings.ReplaceAll(body, "{{.Name}}", r.ContactName)
-		body = strings.ReplaceAll(body, "{{.Email}}", r.ContactEmail)
+		body = strings.ReplaceAll(body, "{{.Name}}", html.EscapeString(r.ContactName))
+		body = strings.ReplaceAll(body, "{{.Email}}", html.EscapeString(r.ContactEmail))
 		body = strings.ReplaceAll(body, "{{.UnsubscribeURL}}", unsubscribeURL)
 		body = strings.ReplaceAll(body, "{{.TrackingPixelURL}}", trackingURL)
 		body = strings.ReplaceAll(body, "{{.InviteURL}}", inviteURL)

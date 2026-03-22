@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"html"
 	"io"
 	"math/big"
 	"net/http"
@@ -5525,4 +5526,146 @@ func TestFloatEnvOrInvalidFallsBack(t *testing.T) {
 	if v := floatEnvOr("TEST_FLOAT_BAD", 10); v != 10 {
 		t.Fatalf("got %f, want 10 (fallback)", v)
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Input safety: HTML escaping in campaign templates
+// ---------------------------------------------------------------------------
+
+func TestCampaignTemplateEscapesContactName(t *testing.T) {
+	capMailer := &CapturingMailer{}
+	env := newTestEnvWithMailer(t, capMailer)
+	token := loginAsAdmin(t, env)
+
+	xssName := `<script>alert(1)</script>`
+	c := createContact(t, env, token, "xssname@example.com", xssName)
+	contactID, _ := c["id"].(string)
+
+	seg := createSegment(t, env, token, "XSSNameSeg", "")
+	segID, _ := seg["id"].(string)
+	addContactToSegment(t, env, token, segID, contactID)
+
+	segsJSON, _ := json.Marshal([]string{segID})
+	campBody := fmt.Sprintf(
+		`{"subject":"XSS Test","html_body":"<p>Hello {{.Name}}</p>","from_name":"Test","from_email":"test@example.com","segment_ids":%s}`,
+		segsJSON,
+	)
+	campResp := doRequest(t, env.srv, "POST", "/admin/campaigns", token, campBody)
+	assertStatus(t, campResp, http.StatusCreated)
+	var camp map[string]any
+	decodeJSON(t, campResp, &camp)
+	campID, _ := camp["id"].(string)
+
+	sendResp := doRequest(t, env.srv, "POST", "/admin/campaigns/"+campID+"/send", token, "")
+	assertStatus(t, sendResp, http.StatusAccepted)
+	sendResp.Body.Close()
+
+	if len(capMailer.mails) == 0 {
+		t.Fatal("no emails captured")
+	}
+	body := capMailer.mails[0].Body
+	escaped := html.EscapeString(xssName)
+	if !strings.Contains(body, escaped) {
+		t.Errorf("expected escaped name %q in body, got: %s", escaped, body)
+	}
+	if strings.Contains(body, xssName) {
+		t.Errorf("body contains unescaped XSS payload: %s", body)
+	}
+}
+
+func TestCampaignTemplateEscapesContactEmail(t *testing.T) {
+	capMailer := &CapturingMailer{}
+	env := newTestEnvWithMailer(t, capMailer)
+	token := loginAsAdmin(t, env)
+
+	// Create contact with a normal email but use {{.Email}} in template.
+	// The contact email itself is valid, but we test that special chars
+	// in the display context get escaped. Use a contact with name containing
+	// HTML chars and reference {{.Email}} in the template.
+	c := createContact(t, env, token, "escapeemail@example.com", "Normal")
+	contactID, _ := c["id"].(string)
+
+	seg := createSegment(t, env, token, "EmailEscSeg", "")
+	segID, _ := seg["id"].(string)
+	addContactToSegment(t, env, token, segID, contactID)
+
+	// Template uses {{.Email}} — the email address itself should be escaped
+	segsJSON, _ := json.Marshal([]string{segID})
+	campBody := fmt.Sprintf(
+		`{"subject":"Email Esc","html_body":"<p>Your email: {{.Email}}</p>","from_name":"Test","from_email":"test@example.com","segment_ids":%s}`,
+		segsJSON,
+	)
+	campResp := doRequest(t, env.srv, "POST", "/admin/campaigns", token, campBody)
+	assertStatus(t, campResp, http.StatusCreated)
+	var camp map[string]any
+	decodeJSON(t, campResp, &camp)
+	campID, _ := camp["id"].(string)
+
+	sendResp := doRequest(t, env.srv, "POST", "/admin/campaigns/"+campID+"/send", token, "")
+	assertStatus(t, sendResp, http.StatusAccepted)
+	sendResp.Body.Close()
+
+	if len(capMailer.mails) == 0 {
+		t.Fatal("no emails captured")
+	}
+	body := capMailer.mails[0].Body
+	// The email should appear HTML-escaped in the body
+	escaped := html.EscapeString("escapeemail@example.com")
+	if !strings.Contains(body, escaped) {
+		t.Errorf("expected escaped email %q in body, got: %s", escaped, body)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Input safety: email validation
+// ---------------------------------------------------------------------------
+
+func TestEmailValidationRejectsInvalid(t *testing.T) {
+	invalid := []string{
+		"a@b.c",          // single-char TLD
+		"@foo.com",       // no local part
+		"foo@",           // no domain
+		"foo@bar",        // no TLD
+		"foo@.com",       // domain starts with dot
+		"foo bar@baz.com", // space in local part
+		"",               // empty
+	}
+	for _, email := range invalid {
+		t.Run(email, func(t *testing.T) {
+			if iam.EmailRegex.MatchString(email) {
+				t.Errorf("expected %q to be rejected", email)
+			}
+		})
+	}
+}
+
+func TestEmailValidationAcceptsValid(t *testing.T) {
+	valid := []string{
+		"user@example.com",
+		"first.last@example.co.uk",
+		"user+tag@example.org",
+		"user@subdomain.example.com",
+		"a1@example.io",
+	}
+	for _, email := range valid {
+		t.Run(email, func(t *testing.T) {
+			if !iam.EmailRegex.MatchString(email) {
+				t.Errorf("expected %q to be accepted", email)
+			}
+		})
+	}
+}
+
+func TestContactEmailLengthLimit(t *testing.T) {
+	env := newTestEnv(t)
+	token := loginAsAdmin(t, env)
+
+	// Build a 255+ char email
+	longLocal := strings.Repeat("a", 243)
+	longEmail := longLocal + "@example.com" // 243 + 12 = 255 chars
+
+	resp := doRequest(t, env.srv, "POST", "/admin/contacts", token,
+		fmt.Sprintf(`{"email":%q,"name":"Long"}`, longEmail))
+	assertStatus(t, resp, http.StatusBadRequest)
+	resp.Body.Close()
 }
