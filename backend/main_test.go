@@ -5822,3 +5822,305 @@ func TestContactEmailLengthLimit(t *testing.T) {
 	assertStatus(t, resp, http.StatusBadRequest)
 	resp.Body.Close()
 }
+
+// ---------------------------------------------------------------------------
+// Admin UI API Contract Tests
+// ---------------------------------------------------------------------------
+// These tests verify that the backend API contracts match what the frontend
+// admin UI expects. Each test validates request format, response shape, and
+// required fields as consumed by the Vue frontend.
+
+func TestAdminUIContract_LoginFlow(t *testing.T) {
+	srv := newTestServer(t)
+
+	t.Run("POST /login returns access_token with JWT containing role and tid", func(t *testing.T) {
+		resp := doJSON(t, srv, "/login", map[string]any{
+			"email":    "admin@test.com",
+			"password": "adminpass123",
+		})
+		assertStatus(t, resp, http.StatusOK)
+
+		var body map[string]any
+		decodeJSON(t, resp, &body)
+
+		// Frontend expects: access_token (JWT with role, tid claims)
+		accessToken, ok := body["access_token"].(string)
+		if !ok || accessToken == "" {
+			t.Fatal("response must contain non-empty access_token")
+		}
+		if body["token_type"] != "Bearer" {
+			t.Fatalf("expected token_type Bearer, got %v", body["token_type"])
+		}
+
+		// Frontend decodes JWT to check role == "admin"
+		parts := strings.Split(accessToken, ".")
+		if len(parts) != 3 {
+			t.Fatalf("access_token must be a JWT with 3 parts, got %d", len(parts))
+		}
+		payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+		if err != nil {
+			t.Fatalf("failed to decode JWT payload: %v", err)
+		}
+		var claims map[string]any
+		if err := json.Unmarshal(payload, &claims); err != nil {
+			t.Fatalf("failed to parse JWT claims: %v", err)
+		}
+		if claims["role"] != "admin" {
+			t.Fatalf("JWT must contain role claim, got %v", claims["role"])
+		}
+		if _, ok := claims["tid"]; !ok {
+			t.Fatal("JWT must contain tid (tenant ID) claim")
+		}
+	})
+
+	t.Run("POST /login with bad credentials returns 401 with error field", func(t *testing.T) {
+		resp := doJSON(t, srv, "/login", map[string]any{
+			"email":    "admin@test.com",
+			"password": "wrongpassword",
+		})
+		assertStatus(t, resp, http.StatusUnauthorized)
+
+		var body map[string]any
+		decodeJSON(t, resp, &body)
+		if body["error"] != "invalid_grant" {
+			t.Fatalf("expected error=invalid_grant, got %v", body["error"])
+		}
+	})
+}
+
+func TestAdminUIContract_UserList(t *testing.T) {
+	env := newTestEnv(t)
+	token := loginAsAdmin(t, env)
+
+	t.Run("GET /admin/users returns array with required fields", func(t *testing.T) {
+		resp := doRequest(t, env.srv, "GET", "/admin/users", token, "")
+		assertStatus(t, resp, http.StatusOK)
+
+		var users []map[string]any
+		decodeJSON(t, resp, &users)
+
+		if len(users) == 0 {
+			t.Fatal("expected at least one user (seeded admin)")
+		}
+
+		// Verify all fields the frontend expects
+		u := users[0]
+		requiredFields := []string{"id", "email", "name", "role", "created_at"}
+		for _, f := range requiredFields {
+			if _, ok := u[f]; !ok {
+				t.Errorf("user object missing required field %q", f)
+			}
+		}
+	})
+
+	t.Run("GET /admin/users without auth returns 401", func(t *testing.T) {
+		resp := doRequest(t, env.srv, "GET", "/admin/users", "", "")
+		assertStatus(t, resp, http.StatusUnauthorized)
+		resp.Body.Close()
+	})
+}
+
+func TestAdminUIContract_UserCRUD(t *testing.T) {
+	env := newTestEnv(t)
+	token := loginAsAdmin(t, env)
+
+	// Create a user to work with
+	resp := doRequest(t, env.srv, "GET", "/admin/users", token, "")
+	assertStatus(t, resp, http.StatusOK)
+	var users []map[string]any
+	decodeJSON(t, resp, &users)
+	userID := users[0]["id"].(string)
+
+	t.Run("GET /admin/users/{id} returns user with required fields", func(t *testing.T) {
+		resp := doRequest(t, env.srv, "GET", "/admin/users/"+userID, token, "")
+		assertStatus(t, resp, http.StatusOK)
+
+		var u map[string]any
+		decodeJSON(t, resp, &u)
+		for _, f := range []string{"id", "email", "name", "role", "created_at"} {
+			if _, ok := u[f]; !ok {
+				t.Errorf("user response missing field %q", f)
+			}
+		}
+	})
+
+	t.Run("PUT /admin/users/{id} updates name and role", func(t *testing.T) {
+		resp := doRequest(t, env.srv, "PUT", "/admin/users/"+userID, token,
+			`{"name":"Updated Admin","role":"admin"}`)
+		assertStatus(t, resp, http.StatusOK)
+
+		var u map[string]any
+		decodeJSON(t, resp, &u)
+		if u["name"] != "Updated Admin" {
+			t.Fatalf("expected name Updated Admin, got %v", u["name"])
+		}
+	})
+}
+
+func TestAdminUIContract_ClientManagement(t *testing.T) {
+	env := newTestEnv(t)
+	token := loginAsAdmin(t, env)
+
+	var clientID string
+
+	t.Run("POST /clients creates client with client_secret in response", func(t *testing.T) {
+		resp := doJSONWithAuth(t, env.srv, "/clients", map[string]any{
+			"name":          "Test App",
+			"redirect_uris": []string{"https://app.example.com/callback"},
+		}, token)
+		assertStatus(t, resp, http.StatusCreated)
+
+		var body map[string]any
+		decodeJSON(t, resp, &body)
+
+		// Frontend expects client_secret only on creation
+		if _, ok := body["client_secret"]; !ok {
+			t.Fatal("POST /clients response must include client_secret")
+		}
+		if _, ok := body["client_id"]; !ok {
+			t.Fatal("POST /clients response must include client_id")
+		}
+		clientID = body["client_id"].(string)
+	})
+
+	t.Run("GET /admin/clients returns array without client_secret", func(t *testing.T) {
+		resp := doRequest(t, env.srv, "GET", "/admin/clients", token, "")
+		assertStatus(t, resp, http.StatusOK)
+
+		var clients []map[string]any
+		decodeJSON(t, resp, &clients)
+
+		if len(clients) == 0 {
+			t.Fatal("expected at least one client")
+		}
+
+		c := clients[0]
+		for _, f := range []string{"client_id", "name", "redirect_uris", "created_at"} {
+			if _, ok := c[f]; !ok {
+				t.Errorf("client object missing field %q", f)
+			}
+		}
+		// client_secret must never appear in list
+		if _, ok := c["client_secret"]; ok {
+			t.Error("GET /admin/clients must not expose client_secret")
+		}
+	})
+
+	t.Run("PUT /admin/clients/{id} updates client", func(t *testing.T) {
+		if clientID == "" {
+			t.Skip("no client created")
+		}
+		resp := doRequest(t, env.srv, "PUT", "/admin/clients/"+clientID, token,
+			`{"name":"Updated App","redirect_uris":["https://new.example.com/cb"]}`)
+		assertStatus(t, resp, http.StatusOK)
+
+		var c map[string]any
+		decodeJSON(t, resp, &c)
+		if c["name"] != "Updated App" {
+			t.Fatalf("expected name Updated App, got %v", c["name"])
+		}
+	})
+
+	t.Run("DELETE /admin/clients/{id} removes client", func(t *testing.T) {
+		if clientID == "" {
+			t.Skip("no client created")
+		}
+		resp := doRequest(t, env.srv, "DELETE", "/admin/clients/"+clientID, token, "")
+		assertStatus(t, resp, http.StatusOK)
+		resp.Body.Close()
+
+		// Verify it's gone
+		resp = doRequest(t, env.srv, "GET", "/admin/clients/"+clientID, token, "")
+		assertStatus(t, resp, http.StatusNotFound)
+		resp.Body.Close()
+	})
+}
+
+func TestAdminUIContract_ChangePassword(t *testing.T) {
+	env := newTestEnv(t)
+	token := loginAsAdmin(t, env)
+
+	t.Run("POST /password changes password successfully", func(t *testing.T) {
+		resp := doJSONWithAuth(t, env.srv, "/password", map[string]any{
+			"current_password": "adminpass123",
+			"new_password":     "newpassword456",
+		}, token)
+		assertStatus(t, resp, http.StatusOK)
+		resp.Body.Close()
+
+		// Verify new password works
+		loginResp := doJSON(t, env.srv, "/login", map[string]any{
+			"email":    "admin@test.com",
+			"password": "newpassword456",
+		})
+		assertStatus(t, loginResp, http.StatusOK)
+		loginResp.Body.Close()
+	})
+
+	t.Run("POST /password with wrong current_password returns 401 invalid_grant", func(t *testing.T) {
+		// Re-login with the new password to get a fresh token
+		tr := loginUser(t, env.srv, "admin@test.com", "newpassword456")
+
+		resp := doJSONWithAuth(t, env.srv, "/password", map[string]any{
+			"current_password": "wrongpassword",
+			"new_password":     "anotherpass789",
+		}, tr.AccessToken)
+		assertStatus(t, resp, http.StatusUnauthorized)
+
+		var body map[string]any
+		decodeJSON(t, resp, &body)
+		// Frontend interceptor checks for "invalid_grant" to preserve session
+		if body["error"] != "invalid_grant" {
+			t.Fatalf("expected error=invalid_grant, got %v", body["error"])
+		}
+	})
+}
+
+func TestAdminUIContract_SecurityHeaders(t *testing.T) {
+	env := newTestEnv(t)
+	token := loginAsAdmin(t, env)
+
+	// Use the full middleware stack via httptest.NewServer
+	store, err := NewStore(":memory:")
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	if err := store.SeedAdmin("admin@test.com", "adminpass123", "Admin"); err != nil {
+		t.Fatalf("SeedAdmin: %v", err)
+	}
+	_ = token // already tested auth above
+	_ = env
+
+	t.Run("API responses include CORS headers for admin UI", func(t *testing.T) {
+		srv := newTestServer(t)
+		resp := doGet(t, srv, "/health", nil)
+		assertStatus(t, resp, http.StatusOK)
+
+		// CORS must allow Authorization and X-Tenant headers for the admin UI
+		allowHeaders := resp.Header.Get("Access-Control-Allow-Headers")
+		if !strings.Contains(allowHeaders, "Authorization") {
+			t.Errorf("CORS Allow-Headers must include Authorization, got %q", allowHeaders)
+		}
+		if !strings.Contains(allowHeaders, "X-Tenant") {
+			t.Errorf("CORS Allow-Headers must include X-Tenant, got %q", allowHeaders)
+		}
+		resp.Body.Close()
+	})
+}
+
+func TestAdminUIContract_TokenFlow(t *testing.T) {
+	srv := newTestServer(t)
+
+	t.Run("login returns refresh_token for token renewal", func(t *testing.T) {
+		tr := loginUser(t, srv, "admin@test.com", "adminpass123")
+		if tr.RefreshToken == "" {
+			t.Fatal("login must return a refresh_token")
+		}
+		if tr.IDToken == "" {
+			t.Fatal("login must return an id_token")
+		}
+		if tr.ExpiresIn <= 0 {
+			t.Fatal("login must return positive expires_in")
+		}
+	})
+}
