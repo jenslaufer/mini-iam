@@ -231,6 +231,7 @@ button:hover{background:#1d4ed8}
 </style></head><body>
 <form method="POST" action="">
 <h2>Sign In</h2>
+<input type="hidden" name="csrf_token" value="%s">
 <input type="hidden" name="client_id" value="%s">
 <input type="hidden" name="redirect_uri" value="%s">
 <input type="hidden" name="state" value="%s">
@@ -243,6 +244,7 @@ button:hover{background:#1d4ed8}
 <label>Password</label><input type="password" name="password" required>
 <button type="submit">Sign In</button>
 </form></body></html>`,
+		html.EscapeString(tenantctx.CSRFTokenFromContext(r.Context())),
 		html.EscapeString(q.Get("client_id")),
 		html.EscapeString(q.Get("redirect_uri")),
 		html.EscapeString(q.Get("state")),
@@ -1141,11 +1143,12 @@ button:hover{background:#1d4ed8}
 </style></head><body>
 <form method="POST">
 <h2>Activate Account</h2>
+<input type="hidden" name="csrf_token" value="%s">
 <p style="text-align:center;color:#666;font-size:0.9rem">%s</p>
 <label>Password</label><input type="password" name="password" required minlength="8" autofocus>
 <label>Confirm Password</label><input type="password" name="confirm" required minlength="8">
 <button type="submit">Activate</button>
-</form></body></html>`, html.EscapeString(email))
+</form></body></html>`, html.EscapeString(tenantctx.CSRFTokenFromContext(r.Context())), html.EscapeString(email))
 
 	case http.MethodPost:
 		var password string
@@ -1321,11 +1324,12 @@ button:hover{background:#1d4ed8}
 </style></head><body>
 <form method="POST">
 <h2>Reset Password</h2>
+<input type="hidden" name="csrf_token" value="%s">
 <p style="text-align:center;color:#666;font-size:0.9rem">%s</p>
 <label>New Password</label><input type="password" name="password" required minlength="8" autofocus>
 <label>Confirm Password</label><input type="password" name="confirm" required minlength="8">
 <button type="submit">Reset Password</button>
-</form></body></html>`, html.EscapeString(user.Email))
+</form></body></html>`, html.EscapeString(tenantctx.CSRFTokenFromContext(r.Context())), html.EscapeString(user.Email))
 
 	case http.MethodPost:
 		var password string

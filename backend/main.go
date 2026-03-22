@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"crypto/rand"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -241,8 +242,14 @@ func main() {
 		"/token":           tokenRate,
 	}, 5*time.Minute)
 
-	// Wrap with rate limiter, tenant middleware, then CORS + security headers
-	handler := SecurityHeadersMiddleware(CORSMiddleware(corsOrigins)(rateLimiter.Middleware(tenant.Middleware(tenantStore, defaultTenantID)(mux))))
+	// Generate CSRF secret for this server instance
+	csrfSecret := make([]byte, 32)
+	if _, err := rand.Read(csrfSecret); err != nil {
+		log.Fatalf("Failed to generate CSRF secret: %v", err)
+	}
+
+	// Wrap with CSRF, rate limiter, tenant middleware, then CORS + security headers
+	handler := SecurityHeadersMiddleware(CORSMiddleware(corsOrigins)(CSRFMiddleware(csrfSecret)(rateLimiter.Middleware(tenant.Middleware(tenantStore, defaultTenantID)(mux)))))
 
 	log.Printf("launch-kit starting on :%s (issuer: %s)", port, issuer)
 	if err := http.ListenAndServe(":"+port, handler); err != nil {

@@ -604,8 +604,8 @@ func (h *Handler) Unsubscribe(w http.ResponseWriter, r *http.Request) {
 </head><body><div class="card">
 <h2>Unsubscribe</h2>
 <p>Unsubscribe <strong>%s</strong> from future emails?</p>
-<form method="POST"><button type="submit">Unsubscribe</button></form>
-</div></body></html>`, html.EscapeString(contact.Email))
+<form method="POST"><input type="hidden" name="csrf_token" value="%s"><button type="submit">Unsubscribe</button></form>
+</div></body></html>`, html.EscapeString(contact.Email), html.EscapeString(tenantctx.CSRFTokenFromContext(r.Context())))
 
 	case http.MethodPost:
 		if err := store.UnsubscribeContact(token); err != nil {
