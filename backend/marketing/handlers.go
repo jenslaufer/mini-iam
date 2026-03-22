@@ -64,7 +64,7 @@ func (h *Handler) AdminContacts(w http.ResponseWriter, r *http.Request) {
 		if !iam.DecodeJSON(w, r, &req) {
 			return
 		}
-		if !iam.EmailRegex.MatchString(req.Email) {
+		if len(req.Email) > 254 || !iam.EmailRegex.MatchString(req.Email) {
 			iam.WriteError(w, http.StatusBadRequest, "invalid_request", "invalid email format")
 			return
 		}

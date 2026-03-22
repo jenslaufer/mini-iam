@@ -71,7 +71,7 @@ func WriteTokenJSON(w http.ResponseWriter, status int, v interface{}) {
 	WriteJSON(w, status, v)
 }
 
-var EmailRegex = regexp.MustCompile(`^[^\s@]+@[^\s@]+\.[^\s@]+$`)
+var EmailRegex = regexp.MustCompile(`^[a-zA-Z0-9.!#$%&'*+/=?^_` + "`" + `{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z]{2,})+$`)
 
 // --- Handlers ---
 
