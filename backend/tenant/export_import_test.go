@@ -2339,3 +2339,238 @@ func TestMigrationRoundTrip(t *testing.T) {
 		t.Errorf("SMTP password changed: %v vs %v", smtp1["smtp_password"], smtp2["smtp_password"])
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Import validation tests
+// ---------------------------------------------------------------------------
+
+func TestImportRejectsInvalidUserEmail(t *testing.T) {
+	env := newExportEnv(t)
+	tok := seedGlobalAdmin(t, env)
+
+	payload := map[string]interface{}{
+		"slug": "invalid-user-email",
+		"name": "Invalid User Email",
+		"users": []map[string]interface{}{
+			{"email": "not-an-email", "password": "pass1234", "name": "Test", "role": "member"},
+		},
+	}
+	resp := doImportRaw(t, env, payload, tok)
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusBadRequest {
+		raw, _ := io.ReadAll(resp.Body)
+		t.Errorf("expected 400 for invalid user email, got %d: %s", resp.StatusCode, raw)
+	}
+}
+
+func TestImportSkipsInvalidContactEmail(t *testing.T) {
+	env := newExportEnv(t)
+	tok := seedGlobalAdmin(t, env)
+
+	payload := map[string]interface{}{
+		"slug": "skip-bad-contact",
+		"name": "Skip Bad Contact",
+		"admin": map[string]interface{}{
+			"email":    "admin@skip-bad.com",
+			"password": "adminpass1",
+		},
+		"contacts": []map[string]interface{}{
+			{"email": "bad-email", "name": "Bad", "consent_source": "api"},
+		},
+	}
+	resp := doImportRaw(t, env, payload, tok)
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusCreated {
+		raw, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 201, got %d: %s", resp.StatusCode, raw)
+	}
+
+	var result map[string]interface{}
+	rawBody, _ := io.ReadAll(resp.Body)
+	if err := json.Unmarshal(rawBody, &result); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+
+	warningsRaw, ok := result["warnings"]
+	if !ok {
+		t.Fatal("response missing 'warnings' field")
+	}
+	warnings, ok := warningsRaw.([]interface{})
+	if !ok || len(warnings) == 0 {
+		t.Fatal("expected non-empty warnings array")
+	}
+
+	found := false
+	for _, w := range warnings {
+		if s, ok := w.(string); ok && strings.Contains(s, "bad-email") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("warnings %v do not mention 'bad-email'", warnings)
+	}
+}
+
+func TestImportRejectsInvalidRedirectURI(t *testing.T) {
+	env := newExportEnv(t)
+	tok := seedGlobalAdmin(t, env)
+
+	payload := map[string]interface{}{
+		"slug": "invalid-redirect-uri",
+		"name": "Invalid Redirect URI",
+		"admin": map[string]interface{}{
+			"email":    "admin@redir.com",
+			"password": "adminpass1",
+		},
+		"clients": []map[string]interface{}{
+			{"name": "Evil Client", "redirect_uris": []string{"javascript:alert(1)"}},
+		},
+	}
+	resp := doImportRaw(t, env, payload, tok)
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusCreated {
+		t.Error("expected non-201 for javascript: redirect URI, but got 201")
+	}
+}
+
+func TestImportRejectsInvalidCampaignStatus(t *testing.T) {
+	env := newExportEnv(t)
+	tok := seedGlobalAdmin(t, env)
+
+	payload := map[string]interface{}{
+		"slug": "invalid-campaign-status",
+		"name": "Invalid Campaign Status",
+		"admin": map[string]interface{}{
+			"email":    "admin@campstatus.com",
+			"password": "adminpass1",
+		},
+		"campaigns": []map[string]interface{}{
+			{
+				"subject":    "Evil",
+				"html_body":  "<p>evil</p>",
+				"from_name":  "Evil",
+				"from_email": "evil@example.com",
+				"status":     "hacked",
+			},
+		},
+	}
+	resp := doImportRaw(t, env, payload, tok)
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusCreated {
+		t.Error("expected non-201 for invalid campaign status 'hacked', but got 201")
+	}
+}
+
+func TestImportRejectsEmptyUserName(t *testing.T) {
+	env := newExportEnv(t)
+	tok := seedGlobalAdmin(t, env)
+
+	payload := map[string]interface{}{
+		"slug": "empty-user-name",
+		"name": "Empty User Name",
+		"users": []map[string]interface{}{
+			{"email": "valid@example.com", "password": "pass1234", "name": "", "role": "member"},
+		},
+	}
+	resp := doImportRaw(t, env, payload, tok)
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusBadRequest {
+		raw, _ := io.ReadAll(resp.Body)
+		t.Errorf("expected 400 for empty user name, got %d: %s", resp.StatusCode, raw)
+	}
+}
+
+func TestImportValidDataStillWorks(t *testing.T) {
+	env := newExportEnv(t)
+	tok := seedGlobalAdmin(t, env)
+
+	payload := map[string]interface{}{
+		"slug": "valid-full-import",
+		"name": "Valid Full Import",
+		"users": []map[string]interface{}{
+			{"email": "admin@valid.com", "password": "adminpass1", "name": "Admin", "role": "admin"},
+			{"email": "member@valid.com", "password": "memberpass1", "name": "Member", "role": "member"},
+		},
+		"clients": []map[string]interface{}{
+			{"name": "My SPA", "redirect_uris": []string{"https://app.valid.com/callback"}},
+		},
+		"segments": []map[string]interface{}{
+			{"name": "newsletter", "description": "Main list"},
+		},
+		"contacts": []map[string]interface{}{
+			{"email": "alice@valid.com", "name": "Alice", "segments": []string{"newsletter"}, "consent_source": "api"},
+		},
+		"campaigns": []map[string]interface{}{
+			{
+				"subject":    "Welcome",
+				"html_body":  "<h1>Hello</h1>",
+				"from_name":  "App",
+				"from_email": "hi@valid.com",
+				"segments":   []string{"newsletter"},
+			},
+		},
+	}
+	resp := doImportRaw(t, env, payload, tok)
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusCreated {
+		raw, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 201 for valid full import, got %d: %s", resp.StatusCode, raw)
+	}
+
+	var result ImportResponse
+	rawBody, _ := io.ReadAll(resp.Body)
+	if err := json.Unmarshal(rawBody, &result); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+
+	if result.TenantID == "" {
+		t.Error("result.tenant_id is empty")
+	}
+	if result.Slug != "valid-full-import" {
+		t.Errorf("result.slug = %q, want %q", result.Slug, "valid-full-import")
+	}
+	if len(result.Clients) != 1 {
+		t.Fatalf("expected 1 client, got %d", len(result.Clients))
+	}
+	if result.Clients[0].ClientSecret == "" {
+		t.Error("client secret should be generated")
+	}
+
+	// Verify users
+	iamScoped := env.iamStore.ForTenant(result.TenantID)
+	admin, err := iamScoped.AuthenticateUser("admin@valid.com", "adminpass1")
+	if err != nil {
+		t.Fatalf("admin cannot authenticate: %v", err)
+	}
+	if admin.Role != "admin" {
+		t.Errorf("admin role = %q, want admin", admin.Role)
+	}
+
+	member, err := iamScoped.AuthenticateUser("member@valid.com", "memberpass1")
+	if err != nil {
+		t.Fatalf("member cannot authenticate: %v", err)
+	}
+	if member.Role != "member" {
+		t.Errorf("member role = %q, want member", member.Role)
+	}
+
+	// Verify campaign created
+	mktScoped := env.mktStore.ForTenant(result.TenantID)
+	campaigns, err := mktScoped.ListCampaigns()
+	if err != nil {
+		t.Fatalf("ListCampaigns: %v", err)
+	}
+	if len(campaigns) != 1 {
+		t.Fatalf("expected 1 campaign, got %d", len(campaigns))
+	}
+	if campaigns[0].Subject != "Welcome" {
+		t.Errorf("campaign.subject = %q, want Welcome", campaigns[0].Subject)
+	}
+}

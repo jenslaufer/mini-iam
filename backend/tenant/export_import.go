@@ -3,6 +3,7 @@ package tenant
 import (
 	"fmt"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strings"
 	"time"
@@ -89,6 +90,7 @@ type ImportResult struct {
 	TenantID string
 	Skipped  bool
 	Clients  []ClientImported
+	Warnings []string
 }
 
 // ClientImported holds created client details for import responses.
@@ -115,6 +117,7 @@ type importResponse struct {
 	TenantID string           `json:"tenant_id"`
 	Slug     string           `json:"slug"`
 	Clients  []ClientImported `json:"clients,omitempty"`
+	Warnings []string         `json:"warnings,omitempty"`
 }
 
 // --- Programmatic import ---
@@ -170,6 +173,21 @@ func ImportTenantConfig(tenantStore *Store, iamStore *iam.Store, mktStore *marke
 			}
 			if _, err := scopedIAM.UpdateUser(created.ID, "", "member"); err != nil {
 				return nil, err
+			}
+		}
+	}
+
+	for _, c := range cfg.Clients {
+		if c.Name == "" || len(c.Name) > 200 {
+			return nil, fmt.Errorf("client name must be 1-200 characters: %q", c.Name)
+		}
+		for _, uri := range c.RedirectURIs {
+			parsed, err := url.Parse(uri)
+			if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+				return nil, fmt.Errorf("invalid redirect URI for client %q: %s", c.Name, uri)
+			}
+			if parsed.Scheme == "javascript" || parsed.Scheme == "data" || parsed.Scheme == "vbscript" {
+				return nil, fmt.Errorf("invalid redirect URI for client %q: %s", c.Name, uri)
 			}
 		}
 	}
@@ -237,8 +255,17 @@ func ImportTenantConfig(tenantStore *Store, iamStore *iam.Store, mktStore *marke
 		segmentMap[s.Name] = seg.ID
 	}
 
+	var warnings []string
 	contactEmailToID := map[string]string{}
 	for _, c := range cfg.Contacts {
+		if !iam.EmailRegex.MatchString(c.Email) || len(c.Email) > 254 {
+			warnings = append(warnings, fmt.Sprintf("skipped contact with invalid email: %s", c.Email))
+			continue
+		}
+		if c.Name == "" || len(c.Name) > 200 {
+			warnings = append(warnings, fmt.Sprintf("skipped contact with invalid name: %q", c.Name))
+			continue
+		}
 		var contact *marketing.Contact
 		var err error
 		if c.Unsubscribed != nil || c.ConsentAt != nil || c.CreatedAt != nil || c.InviteToken != nil {
@@ -273,6 +300,9 @@ func ImportTenantConfig(tenantStore *Store, iamStore *iam.Store, mktStore *marke
 	}
 
 	for _, c := range cfg.Campaigns {
+		if !validCampaignStatuses[c.Status] {
+			return nil, fmt.Errorf("invalid campaign status %q", c.Status)
+		}
 		var segIDs []string
 		for _, segName := range c.Segments {
 			if segID, ok := segmentMap[segName]; ok {
@@ -315,11 +345,13 @@ func ImportTenantConfig(tenantStore *Store, iamStore *iam.Store, mktStore *marke
 		}
 	}
 
-	return &ImportResult{TenantID: tn.ID, Clients: clients}, nil
+	return &ImportResult{TenantID: tn.ID, Clients: clients, Warnings: warnings}, nil
 }
 
 // validRoles are the allowed values for UserConfig.Role.
 var validRoles = map[string]bool{"admin": true, "member": true}
+
+var validCampaignStatuses = map[string]bool{"draft": true, "sending": true, "sent": true, "failed": true, "": true}
 
 // validateUsers checks for duplicate emails and invalid roles.
 func validateUsers(users []UserConfig) error {
@@ -330,6 +362,12 @@ func validateUsers(users []UserConfig) error {
 			return fmt.Errorf("duplicate email in users: %s", u.Email)
 		}
 		seen[lower] = true
+		if !iam.EmailRegex.MatchString(u.Email) || len(u.Email) > 254 {
+			return fmt.Errorf("invalid email format for user: %s", u.Email)
+		}
+		if u.Name == "" || len(u.Name) > 200 {
+			return fmt.Errorf("user name must be 1-200 characters: %q", u.Name)
+		}
 		if !validRoles[u.Role] {
 			return fmt.Errorf("invalid role %q for user %s, must be admin or member", u.Role, u.Email)
 		}
@@ -435,6 +473,7 @@ func (h *ExportImportHandler) Import(w http.ResponseWriter, r *http.Request) {
 		TenantID: result.TenantID,
 		Slug:     cfg.Slug,
 		Clients:  result.Clients,
+		Warnings: result.Warnings,
 	})
 }
 
