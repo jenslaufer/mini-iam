@@ -19,6 +19,7 @@ type SMTPConfig struct {
 	From     string `json:"smtp_from,omitempty"`
 	FromName string `json:"smtp_from_name,omitempty"`
 	RateMS   int    `json:"smtp_rate_ms,omitempty"`
+	TLSMode  string `json:"smtp_tls_mode,omitempty"`
 }
 
 type Tenant struct {
